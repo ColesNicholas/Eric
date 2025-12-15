@@ -52,12 +52,14 @@ model <-
 model$modelsUsed %>% print()
 
 # out of sample cross-validation
+## compile test data
 testData2 <- 
   window(model$dataused,
          start = "2025-07-30",
          end= end(model$data))
 
-lb <- model$modelsUsed  # leaderboard H2OFrame
+## compile model ids
+lb <- model$modelsUsed
 model_ids <- as.vector(lb$model_id)
 
 results <- lapply(model_ids, function(mid) {
@@ -69,12 +71,6 @@ results <- lapply(model_ids, function(mid) {
 })
 do.call(rbind, results)
         
-#testData2 <- window(autoML$dataused,start="2009-01-01",end=end(autoML$data))
-#P1<-iForecast(Model=autoML,newdata=testData2,type="static")
-
 h2o.varimp_heatmap(object = model$modelsUsed, 
                    top_n = 10, 
                    num_of_features = 20)
-
-
-
