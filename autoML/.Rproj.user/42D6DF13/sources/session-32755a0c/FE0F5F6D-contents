@@ -3,20 +3,7 @@
 # Initialize H2O
 h2o.init(max_mem_size = "8g")
 
-# open data and specify variable classes
-data_r <- read_xlsx('PJMdatatest1.xlsx') %>% 
-  
-  # remove extra date variables
-  select(-c('Date',
-            'Day',
-            'Month',
-            'Year',
-            'Days Back')
-         ) %>% 
-  
-  # convert to time series structure
-  mutate(time = as.Date(`Date/Time`)) %>% 
-  select(-`Date/Time`)
+
 
 # specify target and exogenous predictors
 y_zoo <- zoo(data_r$`DA LMP`,

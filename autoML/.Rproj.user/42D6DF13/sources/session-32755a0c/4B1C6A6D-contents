@@ -1,0 +1,39 @@
+library(pwr)
+
+pwr.t.test(n = NULL,
+           d = .28,
+           sig.level = .05,
+           power = .90,
+           type = "two.sample",
+           alternative = "greater"
+           )
+
+# simple approach (because Nick is cognitively overwhelemed)
+Randomly sample 430 papers
+Manipulate author list
+860 papers
+Participants read 1
+860 participants
+
+# more complex approach: but we also want to look at collective intelligence
+Randomly sample 215 small papers
+Randomly sample 215 big papers
+Manipulate author list
+860 papers
+Participants read 1
+860 participants
+
+# reality: $1,720
+860 * 2 
+
+
+# 430 papers in each group
+
+# 220 paper pairs = 440 papers
+
+# 110 papers by small team
+  # 110 described as small
+  # 110 described as big
+# 110 papers by big team
+  # 110 described as small
+  # 110 described as big

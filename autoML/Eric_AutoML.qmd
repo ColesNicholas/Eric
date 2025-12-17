@@ -1,0 +1,307 @@
+---
+title: "Eric_AutoML.R"
+author: "Nicholas a. Coles"
+format: html
+editor_options: 
+  chunk_output_type: console
+---
+
+# load libraries and data
+```{r}
+# time series autoML
+library(h2o)
+library(iForecast)
+library(zoo)
+library(slider)
+
+# data processing
+library(tidyverse)
+library(readxl)
+```
+
+```{r}
+# open data and specify variable classes
+data_r <- read_xlsx('PJMdatatest1.xlsx') %>%
+
+  # remove extra date variables
+  select(-c('Date', 'Day', 'Month', 'Year', 'Days Back')) %>%
+
+  # convert to time series structure
+  mutate(time = as.Date(`Date/Time`)) %>%
+  select(-`Date/Time`) %>%
+  arrange(time) %>%
+
+  # rename main dv
+  rename('DA_LMP' = 'DA LMP',
+         'avg_load' = 'Average Load')
+```
+
+# Eric EMA approach
+## Estimate Average Load
+For Average Load, calculate:
+* 'todays value' (lag 1)
+* 'yesterday's value' (lag 2)
+* average over past 3 days (slide 3)
+* average over past 7 days  (slide 7)
+* average over past 14 days  (slide 14)
+* average over past 30 days  (slide 30)
+
+Then average those values
+```{r}
+data_r <-
+  data_r %>%
+
+  # calculate lags and slides
+  mutate(
+    # lag 1
+    load_lag1 = lag(avg_load, 1),
+    
+    # lag 1
+    load_lag2 = lag(avg_load, 2),
+
+    # slide 3
+    load_slide3 = slide_dbl(
+      .x = avg_load,
+      .f = mean,
+      .before = 4,
+      .after = -2,
+      .complete = TRUE,
+      na.rm = T
+    ),
+
+    # slide 7
+    load_slide7 = slide_dbl(
+      .x = avg_load,
+      .f = mean,
+      .before = 8,
+      .after = -2,
+      .complete = TRUE,
+      na.rm = T
+    ),
+
+    # slide 14
+    load_slide14 = slide_dbl(
+      .x = avg_load,
+      .f = mean,
+      .before = 15,
+      .after = -2,
+      .complete = TRUE,
+      na.rm = T
+    ),
+
+    # slide 30
+    load_slide30 = slide_dbl(
+      .x = avg_load,
+      .f = mean,
+      .before = 31,
+      .after = -2,
+      .complete = TRUE,
+      na.rm = T
+    )
+  ) |>
+
+  # calculate predicted load via weighting
+  rowwise() |>
+  mutate(
+    pred_load = mean(
+      c(
+        load_lag1,
+        load_lag2,
+        load_slide3,
+        load_slide7,
+        load_slide14,
+        load_slide30
+      ),
+      na.rm = T
+    )
+  ) |>
+  ungroup()
+```
+
+### Accuracy check: Load
+#### All years
+On average, you are mis-estimating load by 6000 using your method: 500 more than if you would just focus on yesterday.
+```{r}
+tmp <-
+  data_r |>
+  select(time, avg_load, load_lag1, pred_load) |>
+  rowwise() |>
+  mutate(error.eric = abs(avg_load - pred_load),
+         error.lag1 = abs(avg_load - load_lag1))
+
+mean(tmp$error.eric,
+     na.rm = T)
+
+mean(tmp$error.lag1,
+     na.rm = T)
+
+tmp <- tmp %>% 
+  select(time, error.eric, error.lag1) %>% 
+  pivot_longer(error.eric :error.lag1)
+
+ggplot(data = tmp,
+       aes(x = time,
+           y = value)) +
+  facet_grid(cols = vars(name)) +
+  geom_line()
+```
+
+#### Last year
+```{r}
+tmp2 <-
+  data_r |>
+  select(time, avg_load, load_lag1, load_slide3, pred_load) |>
+  filter(time > as.Date("2024-12-31")) %>% 
+  rowwise() |>
+  mutate(error.eric = abs(avg_load - pred_load),
+         error.lag1 = abs(avg_load - load_lag1),
+         error.slide3 = abs(avg_load - load_slide3))
+
+mean(tmp2$error.eric,
+     na.rm = T)
+
+mean(tmp2$error.lag1,
+     na.rm = T)
+
+mean(tmp2$error.slide3,
+     na.rm = T)
+
+tmp2 <- tmp2 %>% 
+  select(time, error.eric, error.lag1, error.slide3) %>% 
+  pivot_longer(error.eric : error.slide3)
+```
+
+```{r}
+ggplot(data = tmp2,
+       aes(x = time,
+           y = value)) +
+  facet_grid(cols = vars(name)) +
+  geom_line()
+
+rm(tmp, tmp2)
+```
+
+## Incorporate load / DA
+```{r}
+data_r <-
+  data_r %>%
+
+  # calculate lags and slides
+  mutate(
+    # lag 1
+    lda_lag1 = 
+      lag(DA_LMP, 1) / load_lag1,
+    
+    # lag 1
+    lda_lag2 = 
+      lag(DA_LMP, 2) / load_lag1,
+
+    # slide 3
+    lda_slide3 = 
+      slide_dbl(
+        .x = DA_LMP,
+        .f = mean,
+        .before = 4,
+        .after = -2,
+        .complete = TRUE,
+        na.rm = T) / 
+      
+    load_slide3,
+
+    # slide 7
+    lda_slide7 = 
+      slide_dbl(
+        .x = DA_LMP,
+        .f = mean,
+        .before = 8,
+        .after = -2,
+        .complete = TRUE,
+        na.rm = T) / 
+      
+      load_slide7,
+
+    # slide 14
+    lda_slide14 = 
+      slide_dbl(
+        .x = DA_LMP,
+        .f = mean,
+        .before = 15,
+        .after = -2,
+        .complete = TRUE,
+        na.rm = T) / 
+      
+      load_slide14,
+
+    # slide 30
+    lda_slide30 = 
+      slide_dbl(
+        .x = DA_LMP,
+        .f = mean,
+        .before = 31,
+        .after = -2,
+        .complete = TRUE,
+        na.rm = T) / 
+      
+      load_slide30
+    ) |>
+
+  # calculate predicted da via weighting
+  rowwise() |>
+  mutate(
+    pred_lda = mean(
+      c(
+        lda_lag1,
+        lda_lag2,
+        lda_slide3,
+        lda_slide7,
+        lda_slide14,
+        lda_slide30
+      ),
+      na.rm = T),
+    
+    pred_price_eric = pred_load * pred_lda) %>% 
+  ungroup() %>% 
+  mutate(pred_price_lag1 = lag(DA_LMP, 1),
+         pred_price_s3 = 
+           slide_dbl(
+             .x = DA_LMP,
+             .f = mean,
+             .before = 4,
+             .after = -2,
+             .complete = TRUE,
+             na.rm = T)
+         )
+```
+
+### Accuracy check: Price
+#### All years
+```{r}
+tmp <-
+  data_r |>
+  select(time, DA_LMP, 
+         pred_price_eric, pred_price_lag1, pred_price_s3) |>
+  rowwise() |>
+  mutate(error.eric = abs(DA_LMP - pred_price_eric),
+         error.lag1 = abs(DA_LMP - pred_price_lag1),
+         error.slide3 = abs(DA_LMP - pred_price_s3))
+
+mean(tmp$error.eric,
+     na.rm = T)
+
+mean(tmp$error.lag1,
+     na.rm = T)
+
+mean(tmp$error.slide3,
+     na.rm = T)
+
+tmp <- tmp %>% 
+  select(time, error.eric : error.slide3) %>% 
+  pivot_longer(error.eric :error.slide3)
+
+ggplot(data = tmp,
+       aes(x = time,
+           y = value)) +
+  facet_grid(cols = vars(name)) +
+  geom_line()
+```
+
