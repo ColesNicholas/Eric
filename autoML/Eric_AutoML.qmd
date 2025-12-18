@@ -5,7 +5,6 @@ format: html
 editor_options: 
   chunk_output_type: console
 ---
-
 # load libraries and data
 ```{r}
 # time series autoML
@@ -17,6 +16,7 @@ library(slider)
 # data processing
 library(tidyverse)
 library(readxl)
+library(DataExplorer)
 ```
 
 # open data and specify variable classes
@@ -52,6 +52,9 @@ x_zoo <- data_r[,
                 drop = FALSE] %>% 
   zoo(x = .,
       order.by = data_r$time)
+
+setdiff(colnames(data_r), 
+        c("time", "DA_LMP"))
 ```
 
 specify training end and initialize h20
@@ -76,7 +79,8 @@ automl <-
 # Inspect model behavior
 ```{r}
 # leaderboard
-automl$modelsUsed %>% print()
+# an average, $4-5 off. But this is too conservative due to likely leakage during CV folding
+lb <- automl$modelsUsed
 
 # feature reliance
 h2o.varimp_heatmap(object = automl$modelsUsed, 
@@ -86,10 +90,20 @@ h2o.varimp_heatmap(object = automl$modelsUsed,
 
 # Out of sample prediction error
 create out-of-sample evaluation function
+
+Reminder: stopped training "2025-10-31"
+automl$train.end
+
+tmp <- lb$model_id[4] %>% 
+  as.vector() %>% 
+  h2o.getModel
+  
+tmp@parameters$training_frame %>% h2o.getFrame() %>% as.data.frame() %>% View()
+
 ```{r}
 EvalFun <- function(m){
   
-  # compile test data
+  # compile test data it's never seen
   testData2 <- 
     window(automl$dataused,
            start = "2025-10-31",
@@ -116,86 +130,59 @@ EvalFun <- function(m){
 }
 ```
 
-## Evaluate model 4: GBM_grid_1
+## Evaluate model 5: GBM_grid_1
 ```{r}
-m4.eval <-
-  lb$model_id[4] %>% 
+m5.eval <-
+  lb$model_id[5] %>% 
   as.vector() %>% 
   h2o.getModel() %>% 
   EvalFun
 
-# view output 
-View(m4.eval)
+# view full output 
+View(m5.eval)
 
 # average wrongness (MAE)
-mean(m4.eval$abs_error)
+mean(m5.eval$abs_error)
 
 # insight: more wrong at high prices
-plot(m4.eval$y,
-     m4.eval$abs_error)
+plot(m5.eval$y,
+     m5.eval$abs_error)
 
 # average wrongness during normal times
-m4.eval[m4.eval$y < 100, ]$abs_error %>% mean()
+m5.eval[m5.eval$y < 100, ]$abs_error %>% mean()
 
-m4.eval[m4.eval$y < 80, ]$abs_error %>% mean()
-  
+m5.eval[m5.eval$y < 80, ]$abs_error %>% mean()
 ```
 
-## Evaluate model 6
-Evaluate model 6: DeepLearning_grid_1_AutoML_2_20251217_161026_model_2
+## Evaluate model 3
+Evaluate model 3: DeepLearning_grid_1_AutoML_3_20251217_194536_model_1
 ```{r}
 h2o.varimp_heatmap(object = automl$modelsUsed, 
                    top_n = 10, 
                    num_of_features = 20)
 
-m6.eval <-
-  lb$model_id[6] %>% 
+m3.eval <-
+  lb$model_id[3] %>% 
   as.vector() %>% 
   h2o.getModel() %>% 
   EvalFun
 
 # view output 
-m6.eval %>% 
+m3.eval %>% 
   select(y, predict, abs_error) %>% 
   View()
 
 # average wrongness (MAE)
-mean(m6.eval$abs_error)
+mean(m3.eval$abs_error)
 
-# insight: more wrong at high prices
-plot(m6.eval$y,
-     m6.eval$abs_error)
-
-# average wrongness during normal times
-m6.eval[m6.eval$y < 100, ]$abs_error %>% mean()
-
-m6.eval[m6.eval$y < 80, ]$abs_error %>% mean()
-```
-
-## Evaluate model 7
-Evaluate model 7: DeepLearning_grid_1_AutoML_2_20251217_161026_model_2
-```{r}
-h2o.varimp_heatmap(object = automl$modelsUsed, 
-                   top_n = 10, 
-                   num_of_features = 20)
-
-m7.eval <-
-  lb$model_id[7] %>% 
-  as.vector() %>% 
-  h2o.getModel() %>% 
-  EvalFun
-
-# average wrongness (MAE)
-mean(m7.eval$abs_error)
-
-# insight: especially tight at low prices
-plot(m7.eval$y,
-     m7.eval$abs_error)
+# insight: better at low prices, just as bad at high prices
+plot(m3.eval$y,
+     m3.eval$abs_error)
 
 # average wrongness during normal times
-m7.eval[m7.eval$y < 100, ]$abs_error %>% mean()
+m3.eval[m3.eval$y < 100, ]$abs_error %>% mean()
 
-m7.eval[m7.eval$y < 80, ]$abs_error %>% mean()
+m3.eval[m3.eval$y < 80, ]$abs_error %>% mean()
 ```
 
 ## Evaluate best ensemble (cue nail bite)
@@ -223,3 +210,42 @@ m1.eval[m1.eval$y < 80, ]$abs_error %>% mean()
 
 automl$output
 ```
+
+## What do we know about the days where the models do well?
+```{r}
+data_r %>% 
+  filter(time > train.end,
+         DA_LMP < 80) %>% 
+  create_report()
+```
+
+## How does this fare compared to a baseline?
+```{r}
+b.eval <- testData2 %>% 
+  as.data.frame() %>% 
+  select(y, ar1) %>% 
+  rowwise() %>% 
+  mutate(abs_error = abs(y - ar1)) %>% 
+  ungroup()
+
+# average wrongness (MAE)
+mean(b.eval$abs_error, 
+     na.rm = T)
+
+mean(m1.eval$abs_error, 
+     na.rm = T)
+
+# insight: especially tight at low prices
+plot(b.eval$y,
+     b.eval$abs_error)
+
+# average wrongness during normal times
+b.eval[b.eval$y < 100, ]$abs_error %>% mean()
+m1.eval[m1.eval$y < 100, ]$abs_error %>% mean()
+
+b.eval[m1.eval$y < 80, ]$abs_error %>% mean()
+m1.eval[m1.eval$y < 80, ]$abs_error %>% mean()
+
+automl$output
+```
+
