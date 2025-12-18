@@ -1,5 +1,5 @@
 ---
-title: "Eric_AutoML.R"
+title: "Eric_AutoML.qmd"
 author: "Nicholas a. Coles"
 format: html
 editor_options: 
@@ -19,12 +19,17 @@ library(tidyverse)
 library(readxl)
 ```
 
-```{r}
 # open data and specify variable classes
+```{r}
 data_r <- read_xlsx('PJMdatatest1.xlsx') %>%
 
-  # remove extra date variables
-  select(-c('Date', 'Day', 'Month', 'Year', 'Days Back')) %>%
+  # remove extra date variables (but keep month)
+  select(-c('Date', 'Day', 'Year', 'Days Back')) %>%
+  
+  # remove leakage variables
+  select(-c('RT LMP', 
+            'DA/L-AVG' : 'GB/NLA'
+            )) %>%
 
   # convert to time series structure
   mutate(time = as.Date(`Date/Time`)) %>%
@@ -32,276 +37,189 @@ data_r <- read_xlsx('PJMdatatest1.xlsx') %>%
   arrange(time) %>%
 
   # rename main dv
-  rename('DA_LMP' = 'DA LMP',
-         'avg_load' = 'Average Load')
+  rename('DA_LMP' = 'DA LMP')
 ```
 
-# Eric EMA approach
-## Estimate Average Load
-For Average Load, calculate:
-* 'todays value' (lag 1)
-* 'yesterday's value' (lag 2)
-* average over past 3 days (slide 3)
-* average over past 7 days  (slide 7)
-* average over past 14 days  (slide 14)
-* average over past 30 days  (slide 30)
-
-Then average those values
+# Prepare to train
+Specify target and exogenous predictors
 ```{r}
-data_r <-
-  data_r %>%
+y_zoo <- zoo(data_r$`DA_LMP`,
+             order.by = data_r$time)
 
-  # calculate lags and slides
-  mutate(
-    # lag 1
-    load_lag1 = lag(avg_load, 1),
+x_zoo <- data_r[, 
+                setdiff(colnames(data_r), 
+                        c("time", "DA_LMP")),
+                drop = FALSE] %>% 
+  zoo(x = .,
+      order.by = data_r$time)
+```
+
+specify training end and initialize h20
+```{r}
+train.end <- "2025-10-31"
+
+h2o.init(max_mem_size = "8g")
+```
+
+# Train
+```{r}
+automl <- 
+  tts.autoML(y = y_zoo,
+             x = x_zoo,
+             train.end = train.end,
+             arOrder   = c(1, 2, 7),   # 1, 2, 7 day lag of y
+             xregOrder = c(0, 1, 2, 7), # 0, 1, 2, 7 day lag of x
+             type = 'none', # stupid setting
+             initial = F) # don't autoinitialize
+```
+
+# Inspect model behavior
+```{r}
+# leaderboard
+automl$modelsUsed %>% print()
+
+# feature reliance
+h2o.varimp_heatmap(object = automl$modelsUsed, 
+                   top_n = 10, 
+                   num_of_features = 20)
+```
+
+# Out of sample prediction error
+create out-of-sample evaluation function
+```{r}
+EvalFun <- function(m){
+  
+  # compile test data
+  testData2 <- 
+    window(automl$dataused,
+           start = "2025-10-31",
+           end = end(automl$data))
+  
+  # predict out of sample using favorite model
+  preds <- 
+    h2o.predict(m, 
+                as.h2o(testData2)) %>% 
+    as.data.frame()
+  
+  # evaluate out-of-sample error
+  eval <-
+    # join dataset
+    cbind(testData2, preds) %>% 
+    as.data.frame() %>% 
     
-    # lag 1
-    load_lag2 = lag(avg_load, 2),
-
-    # slide 3
-    load_slide3 = slide_dbl(
-      .x = avg_load,
-      .f = mean,
-      .before = 4,
-      .after = -2,
-      .complete = TRUE,
-      na.rm = T
-    ),
-
-    # slide 7
-    load_slide7 = slide_dbl(
-      .x = avg_load,
-      .f = mean,
-      .before = 8,
-      .after = -2,
-      .complete = TRUE,
-      na.rm = T
-    ),
-
-    # slide 14
-    load_slide14 = slide_dbl(
-      .x = avg_load,
-      .f = mean,
-      .before = 15,
-      .after = -2,
-      .complete = TRUE,
-      na.rm = T
-    ),
-
-    # slide 30
-    load_slide30 = slide_dbl(
-      .x = avg_load,
-      .f = mean,
-      .before = 31,
-      .after = -2,
-      .complete = TRUE,
-      na.rm = T
-    )
-  ) |>
-
-  # calculate predicted load via weighting
-  rowwise() |>
-  mutate(
-    pred_load = mean(
-      c(
-        load_lag1,
-        load_lag2,
-        load_slide3,
-        load_slide7,
-        load_slide14,
-        load_slide30
-      ),
-      na.rm = T
-    )
-  ) |>
-  ungroup()
+    # calculate error
+    rowwise() %>% 
+    mutate(abs_error = abs(y - predict)) %>% 
+    ungroup()
+  
+  return(eval)
+}
 ```
 
-### Accuracy check: Load
-#### All years
-On average, you are mis-estimating load by 6000 using your method: 500 more than if you would just focus on yesterday.
+## Evaluate model 4: GBM_grid_1
 ```{r}
-tmp <-
-  data_r |>
-  select(time, avg_load, load_lag1, pred_load) |>
-  rowwise() |>
-  mutate(error.eric = abs(avg_load - pred_load),
-         error.lag1 = abs(avg_load - load_lag1))
+m4.eval <-
+  lb$model_id[4] %>% 
+  as.vector() %>% 
+  h2o.getModel() %>% 
+  EvalFun
 
-mean(tmp$error.eric,
-     na.rm = T)
+# view output 
+View(m4.eval)
 
-mean(tmp$error.lag1,
-     na.rm = T)
+# average wrongness (MAE)
+mean(m4.eval$abs_error)
 
-tmp <- tmp %>% 
-  select(time, error.eric, error.lag1) %>% 
-  pivot_longer(error.eric :error.lag1)
+# insight: more wrong at high prices
+plot(m4.eval$y,
+     m4.eval$abs_error)
 
-ggplot(data = tmp,
-       aes(x = time,
-           y = value)) +
-  facet_grid(cols = vars(name)) +
-  geom_line()
+# average wrongness during normal times
+m4.eval[m4.eval$y < 100, ]$abs_error %>% mean()
+
+m4.eval[m4.eval$y < 80, ]$abs_error %>% mean()
+  
 ```
 
-#### Last year
+## Evaluate model 6
+Evaluate model 6: DeepLearning_grid_1_AutoML_2_20251217_161026_model_2
 ```{r}
-tmp2 <-
-  data_r |>
-  select(time, avg_load, load_lag1, load_slide3, pred_load) |>
-  filter(time > as.Date("2024-12-31")) %>% 
-  rowwise() |>
-  mutate(error.eric = abs(avg_load - pred_load),
-         error.lag1 = abs(avg_load - load_lag1),
-         error.slide3 = abs(avg_load - load_slide3))
+h2o.varimp_heatmap(object = automl$modelsUsed, 
+                   top_n = 10, 
+                   num_of_features = 20)
 
-mean(tmp2$error.eric,
-     na.rm = T)
+m6.eval <-
+  lb$model_id[6] %>% 
+  as.vector() %>% 
+  h2o.getModel() %>% 
+  EvalFun
 
-mean(tmp2$error.lag1,
-     na.rm = T)
+# view output 
+m6.eval %>% 
+  select(y, predict, abs_error) %>% 
+  View()
 
-mean(tmp2$error.slide3,
-     na.rm = T)
+# average wrongness (MAE)
+mean(m6.eval$abs_error)
 
-tmp2 <- tmp2 %>% 
-  select(time, error.eric, error.lag1, error.slide3) %>% 
-  pivot_longer(error.eric : error.slide3)
+# insight: more wrong at high prices
+plot(m6.eval$y,
+     m6.eval$abs_error)
+
+# average wrongness during normal times
+m6.eval[m6.eval$y < 100, ]$abs_error %>% mean()
+
+m6.eval[m6.eval$y < 80, ]$abs_error %>% mean()
+```
+
+## Evaluate model 7
+Evaluate model 7: DeepLearning_grid_1_AutoML_2_20251217_161026_model_2
+```{r}
+h2o.varimp_heatmap(object = automl$modelsUsed, 
+                   top_n = 10, 
+                   num_of_features = 20)
+
+m7.eval <-
+  lb$model_id[7] %>% 
+  as.vector() %>% 
+  h2o.getModel() %>% 
+  EvalFun
+
+# average wrongness (MAE)
+mean(m7.eval$abs_error)
+
+# insight: especially tight at low prices
+plot(m7.eval$y,
+     m7.eval$abs_error)
+
+# average wrongness during normal times
+m7.eval[m7.eval$y < 100, ]$abs_error %>% mean()
+
+m7.eval[m7.eval$y < 80, ]$abs_error %>% mean()
+```
+
+## Evaluate best ensemble (cue nail bite)
+Details about the ensemble
+```{r}
+automl$output
 ```
 
 ```{r}
-ggplot(data = tmp2,
-       aes(x = time,
-           y = value)) +
-  facet_grid(cols = vars(name)) +
-  geom_line()
+m1.eval <-
+  automl$output %>% 
+  EvalFun
 
-rm(tmp, tmp2)
+# average wrongness (MAE)
+mean(m1.eval$abs_error)
+
+# insight: especially tight at low prices
+plot(m1.eval$y,
+     m1.eval$abs_error)
+
+# average wrongness during normal times
+m1.eval[m1.eval$y < 100, ]$abs_error %>% mean()
+
+m1.eval[m1.eval$y < 80, ]$abs_error %>% mean()
+
+automl$output
 ```
-
-## Incorporate load / DA
-```{r}
-data_r <-
-  data_r %>%
-
-  # calculate lags and slides
-  mutate(
-    # lag 1
-    lda_lag1 = 
-      lag(DA_LMP, 1) / load_lag1,
-    
-    # lag 1
-    lda_lag2 = 
-      lag(DA_LMP, 2) / load_lag1,
-
-    # slide 3
-    lda_slide3 = 
-      slide_dbl(
-        .x = DA_LMP,
-        .f = mean,
-        .before = 4,
-        .after = -2,
-        .complete = TRUE,
-        na.rm = T) / 
-      
-    load_slide3,
-
-    # slide 7
-    lda_slide7 = 
-      slide_dbl(
-        .x = DA_LMP,
-        .f = mean,
-        .before = 8,
-        .after = -2,
-        .complete = TRUE,
-        na.rm = T) / 
-      
-      load_slide7,
-
-    # slide 14
-    lda_slide14 = 
-      slide_dbl(
-        .x = DA_LMP,
-        .f = mean,
-        .before = 15,
-        .after = -2,
-        .complete = TRUE,
-        na.rm = T) / 
-      
-      load_slide14,
-
-    # slide 30
-    lda_slide30 = 
-      slide_dbl(
-        .x = DA_LMP,
-        .f = mean,
-        .before = 31,
-        .after = -2,
-        .complete = TRUE,
-        na.rm = T) / 
-      
-      load_slide30
-    ) |>
-
-  # calculate predicted da via weighting
-  rowwise() |>
-  mutate(
-    pred_lda = mean(
-      c(
-        lda_lag1,
-        lda_lag2,
-        lda_slide3,
-        lda_slide7,
-        lda_slide14,
-        lda_slide30
-      ),
-      na.rm = T),
-    
-    pred_price_eric = pred_load * pred_lda) %>% 
-  ungroup() %>% 
-  mutate(pred_price_lag1 = lag(DA_LMP, 1),
-         pred_price_s3 = 
-           slide_dbl(
-             .x = DA_LMP,
-             .f = mean,
-             .before = 4,
-             .after = -2,
-             .complete = TRUE,
-             na.rm = T)
-         )
-```
-
-### Accuracy check: Price
-#### All years
-```{r}
-tmp <-
-  data_r |>
-  select(time, DA_LMP, 
-         pred_price_eric, pred_price_lag1, pred_price_s3) |>
-  rowwise() |>
-  mutate(error.eric = abs(DA_LMP - pred_price_eric),
-         error.lag1 = abs(DA_LMP - pred_price_lag1),
-         error.slide3 = abs(DA_LMP - pred_price_s3))
-
-mean(tmp$error.eric,
-     na.rm = T)
-
-mean(tmp$error.lag1,
-     na.rm = T)
-
-mean(tmp$error.slide3,
-     na.rm = T)
-
-tmp <- tmp %>% 
-  select(time, error.eric : error.slide3) %>% 
-  pivot_longer(error.eric :error.slide3)
-
-ggplot(data = tmp,
-       aes(x = time,
-           y = value)) +
-  facet_grid(cols = vars(name)) +
-  geom_line()
-```
-
