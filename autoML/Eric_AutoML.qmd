@@ -17,11 +17,17 @@ library(slider)
 library(tidyverse)
 library(readxl)
 library(DataExplorer)
+library(cowplot)
+
+# idiosyncratic settings
+theme_set(theme_classic())
+options(scipen = 999) # no sci notation
 ```
 
 # open data and specify variable classes
 ```{r}
-data_r <- read_xlsx('PJMdatatest1.xlsx') %>%
+data_r <- 
+  read_xlsx('PJMdatatest1.xlsx') %>%
 
   # remove extra date variables (but keep month)
   select(-c('Date', 'Day', 'Year', 'Days Back')) %>%
@@ -37,7 +43,15 @@ data_r <- read_xlsx('PJMdatatest1.xlsx') %>%
   arrange(time) %>%
 
   # rename main dv
-  rename('DA_LMP' = 'DA LMP')
+  rename('DA_LMP' = 'DA LMP') %>% 
+  
+  # add some variable suggestions from human Eric
+  mutate(al.go =  `Average Load` / `Generation Outages`,
+         ml.go = `Max Load` / `Generation Outages`,
+         anl.go = `Average Net Load` / `Generation Outages`,
+         mnl.go = `Max Net Load` / `Generation Outages`,
+         dclm.al = `Data Center Load Max` / `Average Load`,
+         malm.ml = `Mid Atlantic Load Max` / `Max Load`)
 ```
 
 # Prepare to train
@@ -101,13 +115,13 @@ tmp <- lb$model_id[4] %>%
 tmp@parameters$training_frame %>% h2o.getFrame() %>% as.data.frame() %>% View()
 
 ```{r}
+# compile test data it's never seen
+testData2 <- 
+  window(automl$dataused,
+         start = "2025-10-31",
+         end = end(automl$data))
+
 EvalFun <- function(m){
-  
-  # compile test data it's never seen
-  testData2 <- 
-    window(automl$dataused,
-           start = "2025-10-31",
-           end = end(automl$data))
   
   # predict out of sample using favorite model
   preds <- 
@@ -123,7 +137,9 @@ EvalFun <- function(m){
     
     # calculate error
     rowwise() %>% 
-    mutate(abs_error = abs(y - predict)) %>% 
+    mutate(abs_error = abs(y - predict),
+           per_error = 
+             abs((y - predict) / y) * 100) %>% 
     ungroup()
   
   return(eval)
@@ -196,8 +212,10 @@ m1.eval <-
   automl$output %>% 
   EvalFun
 
-# average wrongness (MAE)
-mean(m1.eval$abs_error)
+# medAE (medium absolute error, or typical wrongness): $5
+# medAbsolute Percentage Error (9.05%)
+median(m1.eval$abs_error)
+median(m1.eval$per_error)
 
 # insight: especially tight at low prices
 plot(m1.eval$y,
@@ -225,15 +243,25 @@ b.eval <- testData2 %>%
   as.data.frame() %>% 
   select(y, ar1) %>% 
   rowwise() %>% 
-  mutate(abs_error = abs(y - ar1)) %>% 
+  mutate(abs_error = abs(y - ar1),
+         per_error = 
+             abs((y - ar1) / y) * 100) %>% 
   ungroup()
 
 # average wrongness (MAE)
 mean(b.eval$abs_error, 
      na.rm = T)
+median(b.eval$abs_error, 
+       na.rm = T)
+median(b.eval$per_error, 
+       na.rm = T)
 
 mean(m1.eval$abs_error, 
      na.rm = T)
+median(m1.eval$abs_error, 
+       na.rm = T)
+median(m1.eval$per_error, 
+       na.rm = T)
 
 # insight: especially tight at low prices
 plot(b.eval$y,
@@ -248,4 +276,744 @@ m1.eval[m1.eval$y < 80, ]$abs_error %>% mean()
 
 automl$output
 ```
+
+# December 18: Regime analyses
+Performance data, trader experience, and actual distribution of DA_LMP all are consistent with notion of 'different rules in different regimes'
+
+Today, we explore what those regimes may be...
+
+We start by looking for clues in our error, where season, load, and gas prices are strong predictors
+```{r}
+m1.eval %>% 
+  cor %>% 
+  as.data.frame %>% 
+  select(abs_error) %>% 
+  arrange(abs_error) %>% 
+  View()
+```
+
+Although I think load is most likely variable, I want to see a data-driven regime categorization structure first
+```{r}
+# standardize predictors
+data_r_scale <- data_r %>% 
+  select(-c(time, `is weekend?`, 
+            Season, Month,
+            `Solar Forecast`,
+            DA_LMP)) %>% 
+  mutate(across(where(is.numeric), 
+                scale))
+
+library(factoextra)
+
+# 3 looks good
+fviz_nbclust(data_r_scale, 
+             kmeans, 
+             method = "wss")
+
+kmean <-
+  kmeans(data_r_scale, 
+         centers = 3, 
+         nstart = 25)
+
+fviz_cluster(kmean, 
+             data = data_r_scale,
+             ellipse.type = "convex", # Draws boundaries around groups
+             palette = "jco",
+             ggtheme = theme_minimal())
+
+# add these clusters back to the original data
+data_r$clusters <- kmean$cluster
+```
+
+## Build regime-specific ensembles
+Regime 1
+```{r}
+data_r_r1 <-
+  data_r %>% 
+  filter(clusters == '1')
+
+y_zoo <- zoo(data_r_r1$`DA_LMP`,
+             order.by = data_r_r1$time)
+
+x_zoo <- data_r_r1[, 
+                setdiff(colnames(data_r_r1), 
+                        c("time", "DA_LMP", "clusters")),
+                drop = FALSE] %>% 
+  zoo(x = .,
+      order.by = data_r_r1$time)
+
+automl.r1 <- 
+  tts.autoML(y = y_zoo,
+             x = x_zoo,
+             train.end = train.end,
+             arOrder   = c(1, 2, 7),   # 1, 2, 7 day lag of y
+             xregOrder = c(0, 1, 2, 7), # 0, 1, 2, 7 day lag of x
+             type = 'none', # stupid setting
+             initial = F) # don't autoinitialize
+```
+
+Regime 2
+```{r}
+data_r_r2 <-
+  data_r %>% 
+  filter(clusters == '2')
+
+y_zoo <- zoo(data_r_r2$`DA_LMP`,
+             order.by = data_r_r2$time)
+
+x_zoo <- data_r_r2[, 
+                setdiff(colnames(data_r_r2), 
+                        c("time", "DA_LMP", "clusters")),
+                drop = FALSE] %>% 
+  zoo(x = .,
+      order.by = data_r_r2$time)
+
+automl.r2 <- 
+  tts.autoML(y = y_zoo,
+             x = x_zoo,
+             train.end = train.end,
+             arOrder   = c(1, 2, 7),   # 1, 2, 7 day lag of y
+             xregOrder = c(0, 1, 2, 7), # 0, 1, 2, 7 day lag of x
+             type = 'none', # stupid setting
+             initial = F) # don't autoinitialize
+```
+
+Regime 3
+```{r}
+data_r_r3 <-
+  data_r %>% 
+  filter(clusters == '3')
+
+y_zoo <- zoo(data_r_r3$`DA_LMP`,
+             order.by = data_r_r3$time)
+
+x_zoo <- data_r_r3[, 
+                setdiff(colnames(data_r_r3), 
+                        c("time", "DA_LMP", "clusters")),
+                drop = FALSE] %>% 
+  zoo(x = .,
+      order.by = data_r_r3$time)
+
+automl.r3 <- 
+  tts.autoML(y = y_zoo,
+             x = x_zoo,
+             train.end = train.end,
+             arOrder   = c(1, 2, 7),   # 1, 2, 7 day lag of y
+             xregOrder = c(0, 1, 2, 7), # 0, 1, 2, 7 day lag of x
+             type = 'none', # stupid setting
+             initial = F) # don't autoinitialize
+```
+
+## Evaluate regime-specific ensembles
+In-sample
+```{r}
+# off by $3.12 during training (better?)
+automl.r1$output
+
+# off by $3.65 during training (better?)
+automl.r2$output
+
+# off by $10.66 during training (difficult regime clearly)
+automl.r3$output
+```
+
+Out-of-sample
+```{r}
+# regime 1 ($8.83, was $11; 9.77% median percent error)
+r1.eval <- 
+  automl.r1$output %>% 
+  EvalFun()
+
+mean(r1.eval$abs_error, 
+     na.rm = T)
+
+median(r1.eval$per_error, 
+       na.rm = T)
+
+# regime 2 ($12.62; was $15; 16.58%)
+r2.eval <- 
+  automl.r2$output %>% 
+  EvalFun()
+
+mean(r2.eval$abs_error, 
+     na.rm = T)
+
+median(r2.eval$per_error, 
+       na.rm = T)
+
+# regime 3 ($22.58, was $29; $35.90)
+r3.eval <- 
+  automl.r3$output %>% 
+  EvalFun()
+
+mean(r3.eval$abs_error, 
+     na.rm = T)
+
+median(r3.eval$per_error, 
+       na.rm = T)
+```
+
+## Evaluate regime-specific ensemble prediction accuracy
+```{r}
+# merge
+testData3 <- data_r %>% 
+  filter(time > "2025-10-30") %>% 
+  select(DA_LMP, time, clusters) %>% 
+  cbind(r1predict = r1.eval$predict) %>% 
+  cbind(r2predict = r2.eval$predict) %>% 
+  cbind(r3predict = r3.eval$predict)
+
+# compute error
+testData3 <- testData3 %>% 
+  mutate(predict = 
+           case_when(clusters == 1 ~ r1predict,
+                     clusters == 2 ~ r2predict,
+                     clusters == 3 ~ r3predict)) %>% 
+  rowwise() %>% 
+  mutate(abs_error = abs(DA_LMP - predict),
+         per_error = 
+             abs((DA_LMP - predict) / DA_LMP) * 100) %>% 
+  ungroup()
+
+# evaluate (about $0.30 less accurate; 1% less accurate)
+mean(testData3$abs_error)
+mean(m1.eval$abs_error)
+
+median(testData3$per_error)
+median(m1.eval$per_error)
+
+plot(testData3$DA_LMP,
+     testData3$abs_error)
+
+plot(m1.eval$y,
+     m1.eval$abs_error)
+
+# examine cross-regime performance
+## regime 1 ensemble has solid understanding of its regime
+r1.eval %>% 
+  cbind(clusters = testData3$clusters) %>% 
+  group_by(clusters) %>% 
+  summarise(mae = mean(abs_error))
+
+## regime 2
+r2.eval %>% 
+  cbind(clusters = testData3$clusters) %>% 
+  group_by(clusters) %>% 
+  summarise(mae = mean(abs_error))
+
+## regime 3 is an even bigger fucking idiot
+r3.eval %>% 
+  cbind(clusters = testData3$clusters) %>% 
+  group_by(clusters) %>% 
+  summarise(mae = mean(abs_error))
+
+# does regime 1's model uniquely understand it? Doesn't seem so.
+r1.eval %>% 
+  cbind(clusters = testData3$clusters) %>% 
+  filter(clusters == 1) %>% 
+  summarise(mae = mean(abs_error))
+
+m1.eval %>% 
+  cbind(clusters = testData3$clusters) %>% 
+  filter(clusters == 1) %>% 
+  summarise(mae = mean(abs_error))
+```
+
+Should we perhaps just tell the models what the regime is? They're mostly mapping imperfectly onto LMP anyways.
+
+Based on a variety of heuristics, I like the 100000 cutoff.
+```{r}
+data_r$`Average Load` %>% hist()
+
+data_r[data_r$`Average Load` < 100000, ]$`Average Load` %>% hist()
+
+data_r[data_r$`Average Load` > 100000, ]$`Average Load` %>% hist()
+```
+
+# December 18b: Assisted regime analyses
+## Define regimens (n.cluster)
+```{r}
+data_r <- 
+  data_r %>% 
+  mutate(n.cluster = 
+           if_else(condition = `Average Load` > 100000,
+                   "high",
+                   "normal")
+         )
+```
+
+## Build regime-specific ensembles
+Build regime 1
+```{r}
+data_r_r1n <-
+  data_r %>% 
+  filter(n.cluster == 'normal')
+
+y_zoo <- zoo(data_r_r1n$`DA_LMP`,
+             order.by = data_r_r1n$time)
+
+x_zoo <- data_r_r1n[, 
+                setdiff(colnames(data_r_r1n), 
+                        c("time", "DA_LMP",
+                          "clusters", "n.cluster")),
+                drop = FALSE] %>% 
+  zoo(x = .,
+      order.by = data_r_r1n$time)
+
+automl.r1n <- 
+  tts.autoML(y = y_zoo,
+             x = x_zoo,
+             train.end = train.end,
+             arOrder   = c(1, 2, 7),   # 1, 2, 7 day lag of y
+             xregOrder = c(0, 1, 2, 7), # 0, 1, 2, 7 day lag of x
+             type = 'none', # stupid setting
+             initial = F) # don't autoinitialize
+```
+
+Regime 2
+```{r}
+data_r_r2n <-
+  data_r %>% 
+  filter(n.cluster == 'high')
+
+y_zoo <- zoo(data_r_r2n$`DA_LMP`,
+             order.by = data_r_r2n$time)
+
+x_zoo <- data_r_r2n[, 
+                setdiff(colnames(data_r_r2n), 
+                        c("time", "DA_LMP",
+                          "clusters", "n.cluster")),
+                drop = FALSE] %>% 
+  zoo(x = .,
+      order.by = data_r_r2n$time)
+
+automl.r2n <- 
+  tts.autoML(y = y_zoo,
+             x = x_zoo,
+             train.end = train.end,
+             arOrder   = c(1, 2, 7),   # 1, 2, 7 day lag of y
+             xregOrder = c(0, 1, 2, 7), # 0, 1, 2, 7 day lag of x
+             type = 'none', # stupid setting
+             initial = F) # don't autoinitialize
+```
+
+## Evaluate regime-specific ensembles
+In-sample
+```{r}
+# off by $3.23 during training (normal)
+automl.r1n$output
+
+# off by $7.53 during training (normal)
+automl.r2n$output
+```
+
+Out-of-sample
+```{r}
+# regime 1 ($10.31, just as good as best regime-agnostic ensemble)
+r1n.eval <- 
+  automl.r1n$output %>% 
+  EvalFun()
+
+mean(r1n.eval$abs_error, 
+     na.rm = T)
+
+# regime 2 ($22, sort of expected)
+r2n.eval <- 
+  automl.r2n$output %>% 
+  EvalFun()
+
+mean(r2n.eval$abs_error, 
+     na.rm = T)
+```
+
+## Evaluate regime-specific ensemble prediction accuracy
+```{r}
+# merge
+testData4 <- data_r %>% 
+  filter(time > "2025-10-30") %>% 
+  select(DA_LMP, time, n.cluster) %>% 
+  cbind(r1npredict = r1n.eval$predict) %>% 
+  cbind(r2npredict = r2n.eval$predict)
+
+# compute error
+testData4 <- testData4 %>% 
+  mutate(predict = 
+           case_when(n.cluster == 'normal' ~ r1npredict,
+                     n.cluster == 'high' ~ r2npredict)) %>% 
+  rowwise() %>% 
+  mutate(abs_error = abs(DA_LMP - predict),
+         per_error = 
+             abs((DA_LMP - predict) / DA_LMP) * 100) %>% 
+  ungroup()
+
+# $11.38. Better than last regime ensemble ($12.44), but not better than regime-agnostic ($10.48)
+mean(testData4$abs_error)
+mean(m1.eval$abs_error)
+
+plot(m1.eval$y,
+     m1.eval$abs_error)
+
+# examine cross-regime performance
+## regime 1 ensemble has solid understanding of its regime
+r1n.eval %>% 
+  cbind(n.cluster = testData4$n.cluster) %>% 
+  group_by(n.cluster) %>% 
+  summarise(mae = mean(abs_error))
+
+## regime 2 is a fucking idiot
+r2n.eval %>% 
+  cbind(n.cluster = testData4$n.cluster) %>% 
+  group_by(n.cluster) %>% 
+  summarise(mae = mean(abs_error))
+
+## regime 3 is an even bigger fucking idiot
+r3.eval %>% 
+  cbind(clusters = testData3$clusters) %>% 
+  group_by(clusters) %>% 
+  summarise(mae = mean(abs_error))
+
+# does regime 1's model uniquely understand it? Perhaps...
+r1.eval %>% 
+  cbind(clusters = testData3$clusters) %>% 
+  filter(clusters == 1) %>% 
+  summarise(mae = mean(abs_error))
+
+m1.eval %>% 
+  cbind(clusters = testData3$clusters) %>% 
+  filter(clusters == 1) %>% 
+  summarise(mae = mean(abs_error))
+```
+
+# December 18c: Sit out scary regimes
+Seems to be a good idea to have models that specifically trained on safe regimes sit out scary regimes
+
+Regime agnostic model
+```{r}
+m1.sit.eval <-
+  m1.eval %>% 
+  select(y, Average.Load_L0, 
+         predict, abs_error, per_error) %>% 
+  mutate(abs_error_sit = 
+           if_else(Average.Load_L0 > 100000,
+                   NA,
+                   abs_error),
+         per_error_sit = 
+           if_else(Average.Load_L0 > 100000,
+                   NA,
+                   per_error))
+
+# average: $4.86 (was $6.25)
+m1.sit.eval$abs_error_sit %>% mean(na.rm = T)
+
+# median: $4.20 (was $4.87)
+m1.sit.eval$abs_error_sit %>% median(na.rm = T)
+
+# median absolute percentage error (8.14%)
+m1.sit.eval$per_error_sit %>% median(na.rm = T)
+```
+
+Regime trained model
+```{r}
+r1n.sit.eval <-
+  r1n.eval %>% 
+  select(y, Average.Load_L0, 
+         predict, abs_error) %>% 
+  mutate(abs_error_sit = 
+           if_else(Average.Load_L0 > 100000,
+                   NA,
+                   abs_error)
+         )
+
+# mae: $5.91
+r1n.sit.eval$abs_error_sit %>% mean(na.rm = T)
+
+# median: $5.58
+r1n.sit.eval$abs_error_sit %>% median(na.rm = T)
+```
+
+Compare
+```{r}
+comp <-
+  r1n.sit.eval %>% 
+  mutate(mod = 'r1n') %>% 
+  select(mod, abs_error_sit, Average.Load_L0) %>% 
+  rbind(
+    m1.sit.eval %>% 
+      mutate(mod = 'm1') %>% 
+      select(mod, abs_error_sit, Average.Load_L0)
+  )
+
+ggplot(data = comp,
+       aes(x = Average.Load_L0,
+           y = abs_error_sit)) +
+  facet_grid(cols = vars(mod)) +
+  geom_point()
+```
+
+# December 18d: Season regime
+```{r}
+data_rs_scale <- data_r %>% 
+  filter(Season == 1 |
+           Season == 4) %>% 
+  select(-c(Season, `is weekend?`, 
+            Month, `Solar Forecast`,
+            DA_LMP, clusters, n.cluster)) %>% 
+  mutate(across(where(is.numeric), 
+                scale))
+  
+ 
+
+automl.rs <- 
+  tts.autoML(y = y_zoo,
+             x = x_zoo,
+             train.end = train.end,
+             arOrder   = c(1, 2, 7),   # 1, 2, 7 day lag of y
+             xregOrder = c(0, 1, 2, 7), # 0, 1, 2, 7 day lag of x
+             type = 'none', # stupid setting
+             initial = F) # don't autoinitialize
+
+rs.eval <- 
+  automl.rs$output %>% 
+  EvalFun()
+
+mean(rs.eval$abs_error)
+median(rs.eval$abs_error)
+
+median(rs.eval$per_error)
+```
+
+# Export for Eric
+```{r}
+testData4 %>% 
+  select(time, DA_LMP) %>% 
+  cbind(m1.sit.eval %>% 
+          select(predict : per_error_sit)) %>% 
+  write.csv('Dec18_prediction_export.csv',
+            row.names = F)
+  rename('DA.LMP' = 'y') %>% 
+  View()
+```
+
+# December 19: Explore functional relationships between DA_LMP and: projected load, dclm.ai, malm.ml, broken up by season
+
+DA_LMP and projected load are exponentially linked.
+Load <-> log(DA_LMP) quite well
+```{r}
+ggplot(data = data_r,
+     aes(x = `Average Load`,
+         y = DA_LMP)) +
+facet_grid('Season') +
+geom_point(alpha = .3) +
+geom_smooth()
+
+ggplot(data = data_r,
+     aes(x = `Average Load`,
+         y = log(DA_LMP))) +
+facet_grid('Season') +
+geom_point(alpha = .3) +
+geom_smooth()
+
+ggplot(data = data_r,
+     aes(x = `Average Load`,
+         y = log(DA_LMP))) +
+geom_point(alpha = .3) +
+geom_smooth(method = 'lm')
+
+
+f2_exp <- 
+  lm(log(DA_LMP) ~ `Average Load`, 
+     data = data_r)
+summary(f2_exp)
+
+f2 <-
+  ggplot(data = data_r,
+       aes(x = `Average Load`,
+           y = DA_LMP)) +
+  geom_point(alpha = .3) +
+  geom_smooth(color = 'red') +
+  geom_smooth(color = 'blue',
+              method = "nls",
+              formula = y ~ a * exp(b * x),
+              method.args = list(start = list(a = 1, 
+                                              b = 0.1)),
+              se = FALSE)
+  authors.n +
+      I(authors.n^2)
+
+```
+
+But we don't know DA_LMP. We'll try to approximate it via reverse-engineered regression
+```{r}
+data_r$AL_scaled <- 
+  data_r$`Average Load` %>% 
+  scale()
+
+# get starting values from a quick log-linear fit:
+lm_start <- 
+  lm(log(DA_LMP) ~ `Average Load`, 
+     data = data_r)
+
+a0 <- exp(coef(lm_start)[1])
+b0 <- coef(lm_start)[2]
+
+# nls fit
+nls_fit <- 
+  nls(DA_LMP ~ a * exp(b * `Average Load`),
+      data = data_r,
+      start = list(a = a0, 
+                   b = b0))
+
+# look at link between exponential predictor and y
+data_r <- data_r %>%
+  rowwise() %>% 
+  mutate(AL_exp = exp(b0 * `Average Load`),
+         AL_exp_pred = a0 * exp(b0 * `Average Load`))
+
+p1 <-
+  ggplot(data = data_r,
+       aes(x = AL_exp_pred,
+           y = DA_LMP)) +
+  geom_point() +
+  geom_smooth(method = 'lm')
+
+p2 <-
+  ggplot(data = data_r,
+       aes(x = `Average Load`,
+           y = DA_LMP)) +
+  geom_point() +
+  geom_smooth(method = 'lm')
+
+plot_grid(p1, p2)
+```
+
+# December 19b: Retrain models with this information
+```{r}
+y_zoo <- zoo(data_r$`DA_LMP`,
+             order.by = data_r$time)
+
+x_zoo <- data_r[, 
+                setdiff(colnames(data_r), 
+                        c("time", "DA_LMP",
+                          "AL_scaled",
+                          "n.cluster",
+                          "clusters")),
+                drop = FALSE] %>% 
+  zoo(x = .,
+      order.by = data_r$time)
+
+setdiff(colnames(data_r), 
+        c("time", "DA_LMP",
+          "AL_scaled",
+          "n.cluster",
+          "clusters"))
+
+automl.ds <- 
+  tts.autoML(y = y_zoo,
+             x = x_zoo,
+             train.end = train.end,
+             arOrder   = c(1, 2, 7),   # 1, 2, 7 day lag of y
+             xregOrder = c(0, 1, 2, 7), # 0, 1, 2, 7 day lag of x
+             type = 'none', # stupid setting
+             initial = F) # don't autoinitialize
+```
+
+## Evaluate whether you helped the models. Do they need your help?
+Recompile test data (now new variables)
+```{r}
+testData2 <- 
+  window(automl.ds$dataused,
+         start = "2025-10-31",
+         end = end(automl.ds$data))
+```
+
+```{r}
+m1.eval <-
+  automl$output %>% 
+  EvalFun
+
+ds.eval <-
+  automl.ds$output %>% 
+  EvalFun
+
+# MAE (mean absolute error, or typical wrongness)
+## without NC: $9.50 (med = $5, 9%)
+mean(m1.eval$abs_error)
+median(m1.eval$abs_error)
+
+## with NC: $11.96 (med = $7, 14%)
+mean(ds.eval$abs_error)
+median(ds.eval$abs_error)
+
+# look at what YOUVE DONE
+plot(ds.eval$y,
+     ds.eval$abs_error)
+
+plot(m1.eval$y,
+     m1.eval$abs_error)
+
+# why???????
+automl.ds$output
+
+h2o.varimp_heatmap(object = automl.ds$modelsUsed, 
+                   top_n = 10, 
+                   num_of_features = 20)
+```
+
+December 19c: Give them a little less
+```{r}
+y_zoo <- zoo(data_r$`DA_LMP`,
+             order.by = data_r$time)
+
+x_zoo <- data_r[, 
+                setdiff(colnames(data_r), 
+                        c("time", "DA_LMP",
+                          "AL_scaled", 'AL_exp_pred',
+                          "n.cluster",
+                          "clusters")),
+                drop = FALSE] %>% 
+  zoo(x = .,
+      order.by = data_r$time)
+
+automl.ds2 <- 
+  tts.autoML(y = y_zoo,
+             x = x_zoo,
+             train.end = train.end,
+             arOrder   = c(1, 2, 7),   # 1, 2, 7 day lag of y
+             xregOrder = c(0, 1, 2, 7), # 0, 1, 2, 7 day lag of x
+             type = 'none', # stupid setting
+             initial = F) # don't autoinitialize
+```
+
+Re-evalute
+```{r}
+testData2 <- 
+  window(automl.ds2$dataused,
+         start = "2025-10-31",
+         end = end(automl.ds2$data))
+
+m1.eval <-
+  automl$output %>% 
+  EvalFun
+
+ds2.eval <-
+  automl.ds2$output %>% 
+  EvalFun
+
+# MAE (mean absolute error, or typical wrongness)
+## without NC: $9.50 (med = $5, 9%)
+mean(m1.eval$abs_error)
+median(m1.eval$abs_error)
+
+## with NC: $11.96 (med = $7, 14%)
+mean(ds2.eval$abs_error)
+median(ds2.eval$abs_error)
+
+# look at what YOUVE DONE
+plot(ds.eval$y,
+     ds.eval$abs_error)
+
+plot(m1.eval$y,
+     m1.eval$abs_error)
+```
+
 
