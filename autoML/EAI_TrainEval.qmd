@@ -1,0 +1,208 @@
+---
+title: "Eric_AutoML.qmd"
+author: "Nicholas a. Coles"
+format: html
+editor_options: 
+  chunk_output_type: console
+---
+# load libraries and data
+```{r}
+# for pulling google drive data
+library(googledrive)
+library(readr)
+
+# time series autoML
+library(h2o)
+library(iForecast)
+library(zoo)
+library(slider)
+
+# data processing
+library(tidyverse)
+library(readxl)
+library(janitor)
+library(cowplot)
+
+# idiosyncratic settings
+theme_set(theme_classic())
+options(scipen = 999) # no sci notation
+set.seed(1967)
+```
+
+# pull and prepare data from Google Drive
+```{r}
+# download from drive
+drive_download(
+  as_id('1EnTGJ41IXUdnQ1satA9cxhB1oXD2m9pC'),
+  path = "eia.input.xlsx",
+  overwrite = TRUE)
+
+# create dataset
+df <- 
+  # open data
+  read_xlsx('eia.input.xlsx') %>% 
+  
+  # clean variable names and structures
+  clean_names() %>% 
+  mutate(date_time = as.Date(date_time)) %>% 
+  
+  # add some variable suggestions from human Eric
+  mutate(al.go =  
+           rto_combined_bidclose_load_forecast_average / rto_combined_reg_total_gen_offline_capacity_average_latest,
+         ml.go = rto_combined_bidclose_load_forecast_maximum / rto_combined_reg_total_gen_offline_capacity_average_latest,
+         anl.go = rto_combined_net_load_forecast_bid_close_average / rto_combined_reg_total_gen_offline_capacity_average_latest,
+         mnl.go = rto_combined_net_load_forecast_bid_close_maximum / rto_combined_reg_total_gen_offline_capacity_average_latest,
+         dclm.al = a_b_c_a_bge_bidclose_load_forecast_b_pepco_bidclose_load_forecast_c_dominion_bidclose_load_forecast_maximum / rto_combined_bidclose_load_forecast_average,
+         malm.ml = mid_atlantic_region_bidclose_load_forecast_maximum / rto_combined_bidclose_load_forecast_maximum
+         )
+```
+
+# Specify the date we are targeting
+```{r}
+target <- df[which(is.na(df$western_hub_dalmp_average))[1], ]$date_time
+
+# inpute fake value for that date so that it will be inclueded in model
+df <- df %>% 
+  mutate(western_hub_dalmp_average = 
+           replace_na(western_hub_dalmp_average, 
+                      -9999999)
+         )
+```
+
+# Train model
+```{r}
+# specify training window
+train.end <- "2025-10-31"
+
+# specify target and predictors
+y_zoo <- zoo(df$western_hub_dalmp_average,
+             order.by = df$date_time)
+
+x_zoo <- df[, 
+            setdiff(colnames(df), 
+                    c("date_time", "western_hub_dalmp_average")),
+            drop = FALSE] %>% 
+  zoo(x = .,
+      order.by = df$date_time)
+
+# initialize h20
+h2o.init(max_mem_size = "8g")
+
+# train
+automl <- 
+  tts.autoML(y = y_zoo,
+             x = x_zoo,
+             train.end = train.end,
+             arOrder   = c(1, 2, 7),   # 1, 2, 7 day lag of y
+             xregOrder = c(0, 1, 2, 7), # 0, 1, 2, 7 day lag of x
+             type = 'none', # stupid setting
+             initial = F) # don't autoinitialize
+```
+
+# Inspect model behavior
+```{r}
+# feature reliance
+h2o.varimp_heatmap(object = automl$modelsUsed, 
+                   top_n = 10, 
+                   num_of_features = 20)
+```
+
+```{r}
+# compile test data it's never seen
+testData2 <- 
+  window(automl$data,
+         start = "2025-10-31",
+         end = end(automl$data))
+
+# create evaluation function
+EvalFun <- function(m){
+  
+  # predict out of sample using favorite model
+  preds <- 
+    h2o.predict(m, 
+                as.h2o(testData2)) %>% 
+    as.data.frame()
+  
+  # evaluate out-of-sample error
+  eval <-
+    # join dataset
+    cbind(testData2, 
+          preds) %>% 
+    as.data.frame() %>% 
+    rownames_to_column('time') %>%
+    
+    # calculate error
+    rowwise() %>% 
+    mutate(abs_error = abs(y - predict),
+           per_error = 
+             abs((y - predict) / y) * 100) %>% 
+    ungroup()
+  
+  return(eval)
+}
+
+# evaluate, remove target, and save
+m.eval <-
+  automl$output %>% 
+  EvalFun %>% 
+  mutate(reg = 
+           ntile(x = rto_combined_bidclose_load_forecast_average_L0,
+                 n = 4))
+
+df.target <- 
+  m.eval %>% 
+  filter(time == target)
+
+m.eval <- 
+  m.eval %>% 
+  filter(time != target)
+
+# medAE (medium absolute error, or typical wrongness): $6.15
+# medAbsolute Percentage Error (10.55%)
+median(m.eval$abs_error)
+median(m.eval$per_error)
+
+# regime
+metrics <-
+  m.eval %>% 
+  group_by(reg) %>% 
+  summarise(n = n(),
+            min.l = 
+              min(rto_combined_bidclose_load_forecast_average_L0), 
+            max.l = 
+              max(rto_combined_bidclose_load_forecast_average_L0), 
+            medae = 
+              median(abs_error), 
+            medape = 
+              median(per_error)
+            )
+
+# insight: especially tight at low prices
+plot(m.eval$rto_combined_bidclose_load_forecast_average_L0,
+     m.eval$per_error)
+```
+
+Identify target prediction
+```{r}
+# what's the regime?
+df.target$rto_combined_bidclose_load_forecast_average_L0
+df.target$reg
+
+# how have I been doing?  
+paste0("EAI predicts that the DA-LMP for ",
+       target,
+       " will be: $",
+       round(df.target$predict,
+             3))
+
+paste("In the past",
+      metrics[metrics$reg == df.target$reg, ]$n,
+      "tests on days with similar projected load regime,",
+      "its prediction have had a median absolute error of $",
+      metrics[metrics$reg == df.target$reg, ]$medae %>% 
+        round(2),
+      "($", metrics[metrics$reg == df.target$reg, ]$medape %>% 
+        round(2), "%)")
+df.target$predict
+```
+
