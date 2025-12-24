@@ -33,14 +33,37 @@ set.seed(1967)
 ```{r}
 # download from drive
 drive_download(
-  as_id('1EnTGJ41IXUdnQ1satA9cxhB1oXD2m9pC'),
-  path = "eia.input.xlsx",
+  as_id('1Edw5O0nfA4ytIhGU2Fhpk9r7MUjKq6kp'),
+  path = "eia.input.xls",
   overwrite = TRUE)
 
 # create dataset
 df <- 
   # open data
-  read_xlsx('eia.input.xlsx') %>% 
+  read_xls('eia.input.xls') %>% 
+  
+  # if gas price missing, use rolling average of past three days
+  mutate(
+    `Henry (GASPRICE) Average` = 
+      if_else(is.na(`Henry (GASPRICE) Average`),
+              slide_dbl(
+                `Henry (GASPRICE) Average`,
+                mean,
+                .before = 3,
+                .after = -1,
+                na.rm = TRUE),
+              `Henry (GASPRICE) Average`),
+    
+    `TETCO-M3 (GASPRICE) Average` = 
+      if_else(is.na(`TETCO-M3 (GASPRICE) Average`),
+              slide_dbl(
+                `TETCO-M3 (GASPRICE) Average`,
+                mean,
+                .before = 3,
+                .after = -1,
+                na.rm = TRUE),
+              `TETCO-M3 (GASPRICE) Average`),
+  ) %>% 
   
   # clean variable names and structures
   clean_names() %>% 
@@ -57,11 +80,11 @@ df <-
          )
 ```
 
-# Specify the date we are targeting
+# Specify the date we are targeting and (if necessary), input values
 ```{r}
-target <- df[which(is.na(df$western_hub_dalmp_average))[1], ]$date_time
+target <- '2025-12-24'
 
-# inpute fake value for that date so that it will be inclueded in model
+# inpute fake value for that date so that it will be included in model
 df <- df %>% 
   mutate(western_hub_dalmp_average = 
            replace_na(western_hub_dalmp_average, 
