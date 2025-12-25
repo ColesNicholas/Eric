@@ -1,0 +1,280 @@
+---
+title: "Eric_NetLoad.qmd"
+author: "Nicholas a. Coles"
+format: html
+editor_options: 
+  chunk_output_type: console
+---
+This code will essentially serve as an ablation study of the importance of net load
+
+# load libraries and data
+```{r}
+# for pulling data
+library(readr)
+
+# time series autoML
+library(h2o)
+library(iForecast)
+library(zoo)
+library(slider)
+
+# data processing
+library(tidyverse)
+library(readxl)
+library(janitor)
+library(cowplot)
+
+# idiosyncratic settings
+theme_set(theme_classic())
+options(scipen = 999) # no sci notation
+set.seed(1967)
+```
+
+# pull and prepare data
+```{r}
+# create dataset
+df <- 
+  # open data
+  read_xls('eia.input.xls') %>% 
+  
+  # if gas price missing, use rolling average of past three days
+  mutate(
+    `Henry (GASPRICE) Average` = 
+      if_else(is.na(`Henry (GASPRICE) Average`),
+              slide_dbl(
+                `Henry (GASPRICE) Average`,
+                mean,
+                .before = 3,
+                .after = -1,
+                na.rm = TRUE),
+              `Henry (GASPRICE) Average`),
+    
+    `TETCO-M3 (GASPRICE) Average` = 
+      if_else(is.na(`TETCO-M3 (GASPRICE) Average`),
+              slide_dbl(
+                `TETCO-M3 (GASPRICE) Average`,
+                mean,
+                .before = 3,
+                .after = -1,
+                na.rm = TRUE),
+              `TETCO-M3 (GASPRICE) Average`),
+  ) %>% 
+  
+  # clean variable names and structures
+  clean_names() %>% 
+  mutate(date_time = as.Date(date_time)) %>% 
+  
+  # add some variable suggestions from human Eric
+  mutate(al.go =  
+           rto_combined_bidclose_load_forecast_average / rto_combined_reg_total_gen_offline_capacity_average_latest,
+         ml.go = rto_combined_bidclose_load_forecast_maximum / rto_combined_reg_total_gen_offline_capacity_average_latest,
+         anl.go = rto_combined_net_load_forecast_bid_close_average / rto_combined_reg_total_gen_offline_capacity_average_latest,
+         mnl.go = rto_combined_net_load_forecast_bid_close_maximum / rto_combined_reg_total_gen_offline_capacity_average_latest,
+         dclm.al = a_b_c_a_bge_bidclose_load_forecast_b_pepco_bidclose_load_forecast_c_dominion_bidclose_load_forecast_maximum / rto_combined_bidclose_load_forecast_average,
+         malm.ml = mid_atlantic_region_bidclose_load_forecast_maximum / rto_combined_bidclose_load_forecast_maximum
+         )
+```
+
+# Specify the variables we are targeting
+```{r}
+target.vars <- c('rto_combined_net_load_forecast_bid_close_average',
+                 'rto_combined_net_load_forecast_bid_close_maximum',
+                 'anl.go',
+                 'mnl.go')
+```
+
+# Train models without target vars
+```{r}
+# specify training window
+train.end <- "2025-10-31"
+
+# specify target and predictors
+y_zoo <- zoo(df$western_hub_dalmp_average,
+             order.by = df$date_time)
+
+x_zoo <- df[, 
+            setdiff(colnames(df), 
+                    c("date_time", "western_hub_dalmp_average",
+                      target.vars)),
+            drop = FALSE] %>% 
+  zoo(x = .,
+      order.by = df$date_time)
+
+# initialize h20
+h2o.init(max_mem_size = "8g")
+
+# train
+automl.blind <- 
+  tts.autoML(y = y_zoo,
+             x = x_zoo,
+             train.end = train.end,
+             arOrder   = c(1, 2, 7),   # 1, 2, 7 day lag of y
+             xregOrder = c(0, 1, 2, 7), # 0, 1, 2, 7 day lag of x
+             type = 'none', # stupid setting
+             initial = F) # don't autoinitialize
+```
+
+## Inspect model behavior and performance
+```{r}
+# feature reliance
+h2o.varimp_heatmap(object = automl.blind$modelsUsed, 
+                   top_n = 10, 
+                   num_of_features = 20)
+```
+
+```{r}
+# compile test data it's never seen
+testData_blind <- 
+  window(automl.blind$data,
+         start = "2025-10-31",
+         end = end(automl.blind$data))
+
+# create evaluation function
+EvalFun <- function(m, d){
+  
+  # predict out of sample using favorite model
+  preds <- 
+    h2o.predict(m, 
+                as.h2o(d)) %>% 
+    as.data.frame()
+  
+  # evaluate out-of-sample error
+  eval <-
+    # join dataset
+    cbind(d, 
+          preds) %>% 
+    as.data.frame() %>% 
+    rownames_to_column('time') %>%
+    
+    # calculate error
+    rowwise() %>% 
+    mutate(abs_error = abs(y - predict),
+           per_error = 
+             abs((y - predict) / y) * 100) %>% 
+    ungroup()
+  
+  return(eval)
+}
+
+# evaluate, remove target, and save
+m.eval.blind <-
+  automl.blind$output %>% 
+  EvalFun(m = .,
+          d = testData_blind) %>% 
+  mutate(reg = 
+           ntile(x = rto_combined_bidclose_load_forecast_average_L0,
+                 n = 4))
+
+# medAE (medium absolute error, or typical wrongness): $5.95
+# medAbsolute Percentage Error (13.04%)
+median(m.eval.blind$abs_error)
+median(m.eval.blind$per_error)
+
+# regime
+metrics <-
+  m.eval.blind %>% 
+  group_by(reg) %>% 
+  summarise(n = n(),
+            min.l = 
+              min(rto_combined_bidclose_load_forecast_average_L0), 
+            max.l = 
+              max(rto_combined_bidclose_load_forecast_average_L0), 
+            medae = 
+              median(abs_error), 
+            medape = 
+              median(per_error)
+            )
+
+# insight: especially tight at low prices
+plot(m.eval.blind$rto_combined_bidclose_load_forecast_average_L0,
+     m.eval.blind$per_error)
+```
+
+# Train models with target vars
+```{r}
+# specify training window
+train.end <- "2025-10-31"
+
+# specify target and predictors
+y_zoo <- zoo(df$western_hub_dalmp_average,
+             order.by = df$date_time)
+
+x_zoo <- df[, 
+            setdiff(colnames(df), 
+                    c("date_time", "western_hub_dalmp_average")),
+            drop = FALSE] %>% 
+  zoo(x = .,
+      order.by = df$date_time)
+
+# initialize h20
+h2o.init(max_mem_size = "8g")
+
+# train
+automl.see <- 
+  tts.autoML(y = y_zoo,
+             x = x_zoo,
+             train.end = train.end,
+             arOrder   = c(1, 2, 7),   # 1, 2, 7 day lag of y
+             xregOrder = c(0, 1, 2, 7), # 0, 1, 2, 7 day lag of x
+             type = 'none', # stupid setting
+             initial = F) # don't autoinitialize
+```
+
+## Inspect model behavior and performance
+```{r}
+# feature reliance
+h2o.varimp_heatmap(object = automl.see$modelsUsed, 
+                   top_n = 10, 
+                   num_of_features = 20)
+```
+
+```{r}
+# compile test data it's never seen
+testData_see <- 
+  window(automl.see$data,
+         start = "2025-10-31",
+         end = end(automl.see$data))
+
+# evaluate, remove target, and save
+m.eval.see <-
+  automl.see$output %>% 
+  EvalFun(m = .,
+          d = testData_see) %>% 
+  mutate(reg = 
+           ntile(x = rto_combined_bidclose_load_forecast_average_L0,
+                 n = 4))
+
+# medAE (medium absolute error, or typical wrongness): $5.45
+# medAbsolute Percentage Error (9.52%)
+median(m.eval.see$abs_error)
+median(m.eval.see$per_error)
+```
+
+# Pull togetehr some side-by-side comparisons for human Eric
+```{r}
+b.df <- m.eval.blind %>%
+  select(time, y, abs_error, per_error) %>% 
+  mutate(model = "blind")
+
+s.df <- m.eval.see %>%
+  select(time, y, abs_error, per_error) %>% 
+  mutate(model = "see")
+
+comp.df <-
+  # join
+  rbind(b.df, s.df)
+
+ggplot(comp.df,
+       aes(x = time,
+           y = abs_error,
+           color = model,
+           group = model)) +
+  geom_point() +
+  geom_line() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+  
+  
+```
+
