@@ -80,7 +80,9 @@ df <-
 target.vars <- c('rto_combined_net_load_forecast_bid_close_average',
                  'rto_combined_net_load_forecast_bid_close_maximum',
                  'anl.go',
-                 'mnl.go')
+                 'mnl.go',
+                 'rto_combined_bidclose_solarfcst_hourly_average',
+                 'rto_combined_bidclose_winddata_stf_average')
 ```
 
 # Train models without target vars
@@ -165,8 +167,8 @@ m.eval.blind <-
            ntile(x = rto_combined_bidclose_load_forecast_average_L0,
                  n = 4))
 
-# medAE (medium absolute error, or typical wrongness): $5.95
-# medAbsolute Percentage Error (13.04%)
+# medAE (medium absolute error, or typical wrongness): $6.89
+# medAbsolute Percentage Error (13.16%)
 median(m.eval.blind$abs_error)
 median(m.eval.blind$per_error)
 
@@ -250,7 +252,7 @@ median(m.eval.see$abs_error)
 median(m.eval.see$per_error)
 ```
 
-# Pull togetehr some side-by-side comparisons for human Eric
+# Pull together some side-by-side comparisons for human Eric
 ```{r}
 b.df <- m.eval.blind %>%
   select(time, y, abs_error, per_error) %>% 
@@ -274,7 +276,12 @@ ggplot(comp.df,
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
 
-  
-  
+comp.df %>% 
+  group_by(model) %>% 
+  summarise(n = n(),
+            medae = 
+              median(abs_error), 
+            medape = 
+              median(per_error)
+            )
 ```
-
