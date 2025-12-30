@@ -32,10 +32,10 @@ set.seed(1967)
 # pull and prepare data from Google Drive
 ```{r}
 # download from drive
-drive_download(
-  as_id('1AzjKQp5U0OTcIPRI4vBsm3OZOr6R2DaZ'),
-  path = "eia.input.xls",
-  overwrite = TRUE)
+# drive_download(
+#   as_id('1ys5pfPHMBjYB8sNjQL-esm3sgCTVVcb5'),
+#   path = "eia.input.xls",
+#   overwrite = TRUE)
 
 # create dataset
 df <- 
@@ -78,13 +78,14 @@ df <-
          dclm.al = a_b_c_a_bge_bidclose_load_forecast_b_pepco_bidclose_load_forecast_c_dominion_bidclose_load_forecast_maximum / rto_combined_bidclose_load_forecast_average,
          malm.ml = mid_atlantic_region_bidclose_load_forecast_maximum / rto_combined_bidclose_load_forecast_maximum
          ) %>% 
+  
   # create squared load predictor (at request of human Nick)
   mutate(load_sqr = rto_combined_bidclose_load_forecast_average ^ 2)
 ```
 
 # Specify the date we are targeting and (if necessary), input values
 ```{r}
-target <- '2025-12-31'
+target <- '2025-12-30'
 
 # inpute fake value for that date so that it will be included in model
 df <- df %>% 
@@ -94,10 +95,10 @@ df <- df %>%
          )
 ```
 
-# Train model
+# Train model (with linear predictor)
 ```{r}
 # specify training window
-train.end <- "2025-10-11"
+train.end <- "2025-07-30"
 
 # specify target and predictors
 y_zoo <- zoo(df$western_hub_dalmp_average,
@@ -106,7 +107,7 @@ y_zoo <- zoo(df$western_hub_dalmp_average,
 x_zoo <- df[, 
             setdiff(colnames(df), 
                     c("date_time", "western_hub_dalmp_average",
-                      "rto_combined_bidclose_load_forecast_average")), # rm average on scary regimes, squared otherwise
+                      "load_sqr")),
             drop = FALSE] %>% 
   zoo(x = .,
       order.by = df$date_time)
@@ -125,34 +126,66 @@ automl <-
              initial = F) # don't autoinitialize
 ```
 
-# Inspect model behavior
+# Train model (with quadratic predictor)
 ```{r}
-# feature reliance
+# respecify predictors
+x_zoo <- df[, 
+            setdiff(colnames(df), 
+                    c("date_time", "western_hub_dalmp_average",
+                      "rto_combined_bidclose_load_forecast_average")),
+            drop = FALSE] %>% 
+  zoo(x = .,
+      order.by = df$date_time)
+
+# train
+automl.quad <- 
+  tts.autoML(y = y_zoo,
+             x = x_zoo,
+             train.end = train.end,
+             arOrder   = c(1, 2, 7),   # 1, 2, 7 day lag of y
+             xregOrder = c(0, 1, 2, 7), # 0, 1, 2, 7 day lag of x
+             type = 'none', # stupid setting
+             initial = F) # don't autoinitialize
+```
+
+# Compare models
+## Feature importance
+```{r}
 h2o.varimp_heatmap(object = automl$modelsUsed, 
+                   top_n = 10, 
+                   num_of_features = 20)
+
+h2o.varimp_heatmap(object = automl.quad$modelsUsed, 
                    top_n = 10, 
                    num_of_features = 20)
 ```
 
+## Performance
 ```{r}
 # compile test data it's never seen
-testData2 <- 
+testData.lin <- 
   window(automl$data,
          start = train.end,
          end = end(automl$data))
 
+testData.quad <- 
+  window(automl.quad$data,
+         start = train.end,
+         end = end(automl.quad$data))
+
 # create evaluation function
-EvalFun <- function(m){
+EvalFun <- function(m, hold){
   
   # predict out of sample using favorite model
   preds <- 
     h2o.predict(m, 
-                as.h2o(testData2)) %>% 
+                as.h2o(hold)) %>% 
     as.data.frame()
   
   # evaluate out-of-sample error
   eval <-
     # join dataset
-    cbind(testData2, 
+    cbind(hold, 
           preds) %>% 
     as.data.frame() %>% 
     rownames_to_column('time') %>%
@@ -168,29 +201,51 @@ EvalFun <- function(m){
 }
 
 # evaluate, remove target, and save
-m.eval <-
-  automl$output %>% 
-  EvalFun %>% 
+m.eval.lin <-
+  EvalFun(m = automl$output,
+          hold = testData.lin) %>% 
+  filter(y > 0)
+
+m.eval.quad <-
+  EvalFun(m = automl.quad$output,
+          hold = testData.quad) %>% 
+  filter(y > 0)
+  
+# medAE (medium absolute error)
+# Linear: $7.05
+# Quadratic: $6.18
+median(m.eval.lin$abs_error)
+median(m.eval.quad$abs_error)
+
+# medAbsolute Percentage Error
+# Linear: 14.86%
+# Quadratic: 12.62%
+median(m.eval.lin$per_error)
+median(m.eval.quad$per_error)
+
+# regime?
+metrics.lin <-
+  m.eval.lin %>% 
+  mutate(reg = 
+           ntile(x = rto_combined_bidclose_load_forecast_average_L0,
+                 n = 4)) %>% 
+  group_by(reg) %>% 
+  summarise(n = n(),
+            min.l = 
+              min(rto_combined_bidclose_load_forecast_average_L0), 
+            max.l = 
+              max(rto_combined_bidclose_load_forecast_average_L0), 
+            medae = 
+              median(abs_error), 
+            medape = 
+              median(per_error)
+            )
+
+metrics.quad <-
+  m.eval.quad %>% 
   mutate(reg = 
            ntile(x = sqrt(load_sqr_L0),
-                 n = 4))
-
-df.target <- 
-  m.eval %>% 
-  filter(time == target)
-
-m.eval <- 
-  m.eval %>% 
-  filter(time != target)
-
-# medAE (medium absolute error, or typical wrongness): $6.15
-# medAbsolute Percentage Error (10.55%)
-median(m.eval$abs_error)
-median(m.eval$per_error)
-
-# regime
-metrics <-
-  m.eval %>% 
+                 n = 4)) %>% 
   group_by(reg) %>% 
   summarise(n = n(),
             min.l = 
@@ -203,9 +258,37 @@ metrics <-
               median(per_error)
             )
 
-# insight: especially tight at low prices
-plot(m.eval$rto_combined_bidclose_load_forecast_average_L0,
-     m.eval$per_error)
+# compare errors
+plot(m.eval.lin$predict,
+     m.eval.lin$y)
+
+plot(m.eval.quad$predict,
+     m.eval.quad$y)
+
+# keep comparing errors
+plot(m.eval.lin$rto_combined_bidclose_load_forecast_average_L0,
+     m.eval.lin$abs_error)
+
+plot(sqrt(m.eval.quad$load_sqr_L0),
+     m.eval.quad$abs_error)
+
+metrics.lin
+metrics.quad
+
+# illustrate drift
+plot(m.eval.lin$time %>% as.factor,
+     m.eval.lin$abs_error,
+     ylim = c(0, 50),
+     main = "linear load predictor",
+     xlab = 'time',
+     ylab = 'absolute error')
+
+plot(m.eval.quad$time %>% as.factor,
+     m.eval.quad$abs_error,
+     ylim = c(0, 50),
+     main = "quadratic load predictor",
+     xlab = 'time',
+     ylab = 'absolute error')
 ```
 
 Identify target prediction

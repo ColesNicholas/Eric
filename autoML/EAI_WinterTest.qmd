@@ -16,6 +16,7 @@ library(h2o)
 library(iForecast)
 library(zoo)
 library(slider)
+library(lubridate)
 
 # data processing
 library(tidyverse)
@@ -96,8 +97,11 @@ df <- df %>%
 
 # Train model
 ```{r}
+# knock out non-winter data
+df.winter <- subset(df, as.integer(format(date_time, "%m")) %in% c(12, 1, 2))
+
 # specify training window
-train.end <- "2025-10-11"
+train.end <- "2025-12-01"
 
 # specify target and predictors
 y_zoo <- zoo(df$western_hub_dalmp_average,
