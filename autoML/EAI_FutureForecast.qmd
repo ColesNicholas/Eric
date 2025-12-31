@@ -42,29 +42,6 @@ df <-
   # open data
   read_xls('eia.input.xls') %>% 
   
-  # if gas price missing, use rolling average of past three days
-  mutate(
-    `Henry (GASPRICE) Average` = 
-      if_else(is.na(`Henry (GASPRICE) Average`),
-              slide_dbl(
-                `Henry (GASPRICE) Average`,
-                mean,
-                .before = 3,
-                .after = -1,
-                na.rm = TRUE),
-              `Henry (GASPRICE) Average`),
-    
-    `TETCO-M3 (GASPRICE) Average` = 
-      if_else(is.na(`TETCO-M3 (GASPRICE) Average`),
-              slide_dbl(
-                `TETCO-M3 (GASPRICE) Average`,
-                mean,
-                .before = 3,
-                .after = -1,
-                na.rm = TRUE),
-              `TETCO-M3 (GASPRICE) Average`),
-  ) %>% 
-  
   # clean variable names and structures
   clean_names() %>% 
   mutate(date_time = as.Date(date_time)) %>% 
@@ -92,6 +69,19 @@ df <- df %>%
            replace_na(western_hub_dalmp_average, 
                       -9999999)
          )
+
+# delete variables that we don't have for future forecasting
+df <- df %>% 
+  select(-c("rto_combined_net_load_forecast_bid_close_average",
+            "rto_combined_net_load_forecast_bid_close_maximum",
+            "rto_combined_bidclose_solarfcst_hourly_average",
+            "rto_combined_bidclose_winddata_stf_average",
+            #"henry_gasprice_average",
+            #"tetco_m3_gasprice_average",
+            "ml.go", "mnl.go", "anl.go")
+         )
+
+any(is.na(df))
 ```
 
 # Train model
@@ -106,7 +96,7 @@ y_zoo <- zoo(df$western_hub_dalmp_average,
 x_zoo <- df[, 
             setdiff(colnames(df), 
                     c("date_time", "western_hub_dalmp_average",
-                      "rto_combined_bidclose_load_forecast_average")), # rm average on scary regimes, squared otherwise
+                      "load_sqr")), # rm average on scary regimes, squared otherwise
             drop = FALSE] %>% 
   zoo(x = .,
       order.by = df$date_time)
@@ -119,7 +109,7 @@ automl <-
   tts.autoML(y = y_zoo,
              x = x_zoo,
              train.end = train.end,
-             arOrder   = c(1, 2, 7),   # 1, 2, 7 day lag of y
+             arOrder   = c(7, 14, 365),   # new lags are necessary
              xregOrder = c(0, 1, 2, 7), # 0, 1, 2, 7 day lag of x
              type = 'none', # stupid setting
              initial = F) # don't autoinitialize
@@ -135,7 +125,7 @@ h2o.varimp_heatmap(object = automl$modelsUsed,
 
 ```{r}
 # compile test data it's never seen
-testData2 <- 
+testData2  <- 
   window(automl$data,
          start = train.end,
          end = end(automl$data))
@@ -162,7 +152,21 @@ EvalFun <- function(m){
     mutate(abs_error = abs(y - predict),
            per_error = 
              abs((y - predict) / y) * 100) %>% 
-    ungroup()
+    ungroup() %>% 
+    
+    # fix silly trick you did to keep DA-LMP in
+    mutate(y = 
+             if_else(y < 0,
+                     NA,
+                     y),
+           abs_error =
+             if_else(y < 0,
+                     NA,
+                     abs_error),
+           per_error =
+             if_else(y < 0,
+                     NA,
+                     per_error))
   
   return(eval)
 }
@@ -172,21 +176,20 @@ m.eval <-
   automl$output %>% 
   EvalFun %>% 
   mutate(reg = 
-           ntile(x = sqrt(load_sqr_L0),
-                 n = 4))
+           ntile(x = rto_combined_bidclose_load_forecast_average_L0,
+                 n = 5))
 
 df.target <- 
   m.eval %>% 
   filter(time == target)
 
-m.eval <- 
-  m.eval %>% 
-  filter(time != target)
 
 # medAE (medium absolute error, or typical wrongness): $6.15
 # medAbsolute Percentage Error (10.55%)
-median(m.eval$abs_error)
-median(m.eval$per_error)
+median(m.eval$abs_error,
+       na.rm = T)
+median(m.eval$per_error,
+       na.rm = T)
 
 # regime
 metrics <-
@@ -194,13 +197,15 @@ metrics <-
   group_by(reg) %>% 
   summarise(n = n(),
             min.l = 
-              min(sqrt(load_sqr_L0)), 
+              min(rto_combined_bidclose_load_forecast_average_L0), 
             max.l = 
-              max(sqrt(load_sqr_L0)), 
+              max(rto_combined_bidclose_load_forecast_average_L0), 
             medae = 
-              median(abs_error), 
+              median(abs_error,
+                     na.rm = T), 
             medape = 
-              median(per_error)
+              median(per_error,
+                     na.rm = T)
             )
 
 # insight: especially tight at low prices
@@ -231,3 +236,34 @@ paste("In the past",
         round(2), "%)")
 df.target$predict
 ```
+
+Quick plot?
+```{r}
+df.fig <-
+  m.eval %>% 
+  rename('DA_LMP' = 'y',
+          'prediction' = 'predict') %>% 
+  select(time, DA_LMP, prediction) %>% 
+  pivot_longer(c(DA_LMP, prediction),
+               names_to = "variable")
+
+ggplot(data = df.fig,
+       aes(x = time,
+           y = value,
+           group = variable,
+           color = variable)) +
+  geom_point(alpha = .5) +
+  geom_line(alpha = .5) +
+  ylab('value') +
+  theme(
+    axis.text.x = 
+      element_text(angle = 45, 
+                   hjust = 1))
+
+m.eval %>% 
+  rename('DA_LMP' = 'y',
+          'prediction' = 'predict') %>% 
+  select(time, DA_LMP, prediction) %>% 
+  write.csv('1231_EAIFutureForecast.csv')
+```
+
