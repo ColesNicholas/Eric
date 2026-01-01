@@ -1,0 +1,637 @@
+---
+title: "Eric_AutoML.qmd"
+author: "Nicholas a. Coles"
+format: html
+editor_options: 
+  chunk_output_type: console
+---
+# load libraries and data
+```{r}
+# for pulling google drive data
+library(googledrive)
+library(readr)
+
+# time series autoML
+library(h2o)
+library(zoo)
+library(slider)
+library(timeDate)
+
+# data processing
+library(tidyverse)
+library(readxl)
+library(janitor)
+library(cowplot)
+library(gridExtra)
+
+# idiosyncratic settings
+theme_set(theme_classic())
+options(scipen = 999) # no sci notation
+set.seed(1967)
+```
+
+# pull and prepare data from Google Drive
+```{r eval = F}
+# download from drive
+drive_download(
+  as_id('18wpeytHVNN-PmJrM18DkFoWc8CnbUgE5'),
+  path = "eia.input.xls",
+  overwrite = TRUE)
+```
+
+```{r}
+# create dataset
+df <- 
+  # open data
+  read_xls('eia.input.xls') %>% 
+  
+  # if gas price missing, use rolling average of past three days
+  mutate(
+    `Henry (GASPRICE) Average` = 
+      if_else(is.na(`Henry (GASPRICE) Average`),
+              slide_dbl(
+                `Henry (GASPRICE) Average`,
+                mean,
+                .before = 3,
+                .after = -1,
+                na.rm = TRUE),
+              `Henry (GASPRICE) Average`),
+    
+    `TETCO-M3 (GASPRICE) Average` = 
+      if_else(is.na(`TETCO-M3 (GASPRICE) Average`),
+              slide_dbl(
+                `TETCO-M3 (GASPRICE) Average`,
+                mean,
+                .before = 3,
+                .after = -1,
+                na.rm = TRUE),
+              `TETCO-M3 (GASPRICE) Average`),
+  ) %>% 
+  
+  # clean variable names and structures
+  clean_names() %>% 
+  mutate(date_time = as.Date(date_time)) %>% 
+  
+  # add some variable suggestions from human Eric
+  mutate(al.go =  
+           rto_combined_bidclose_load_forecast_average / rto_combined_reg_total_gen_offline_capacity_average_latest,
+         ml.go = rto_combined_bidclose_load_forecast_maximum / rto_combined_reg_total_gen_offline_capacity_average_latest,
+         anl.go = rto_combined_net_load_forecast_bid_close_average / rto_combined_reg_total_gen_offline_capacity_average_latest,
+         mnl.go = rto_combined_net_load_forecast_bid_close_maximum / rto_combined_reg_total_gen_offline_capacity_average_latest,
+         dclm.al = a_b_c_a_bge_bidclose_load_forecast_b_pepco_bidclose_load_forecast_c_dominion_bidclose_load_forecast_maximum / rto_combined_bidclose_load_forecast_average,
+         malm.ml = mid_atlantic_region_bidclose_load_forecast_maximum / rto_combined_bidclose_load_forecast_maximum
+         ) %>% 
+  # create squared load predictor (at request of human Nick)
+  mutate(load_sqr = rto_combined_bidclose_load_forecast_average ^ 2)
+```
+
+# Specify the date we are targeting and (if necessary), input values
+```{r}
+target <- '2026-01-01'
+```
+
+# Add 1, 2, 7-day lags of y and all exogenous vars
+```{r}
+lags <- c(1, 2, 7)
+
+add_lags <- 
+  function(data, 
+           target, 
+           exog, 
+           lags) {
+    
+    out <- data
+    
+    # y lags
+    for (L in lags) {
+      out[[paste0(target, "_lag_", L)]] <- lag(out[[target]], L)
+    }
+    
+    # exogenous lags
+    for (col in exog) {
+      for (L in lags) {
+        out[[paste0(col, "_lag_", L)]] <- dplyr::lag(out[[col]], L)
+      }
+    }
+    out
+  }
+
+df_lag <- 
+  add_lags(data = df, 
+           target = "western_hub_dalmp_average", 
+           exog = setdiff(colnames(df), 
+                          c("date_time", "western_hub_dalmp_average",
+                            "rto_combined_bidclose_load_forecast_average")), 
+           lags = lags)
+
+rm(lags, add_lags)
+```
+
+# Train models
+```{r}
+# Define length of validation and test windows
+valid_days <- 50L
+test_days  <- 150L
+
+# indicate start of validateion and test windows
+test_start  <- max(df_lag$date_time) - days(test_days)
+valid_start <- test_start - days(valid_days)
+
+# create splits (time-based)
+train_df <- df_lag %>% filter(date_time <= valid_start)
+valid_df <- df_lag %>% filter(date_time > valid_start & date_time <= test_start)
+trainvalid_df <- df_lag %>% filter(date_time <= test_start)
+test_df  <- df_lag %>% filter(date_time > test_start)
+
+train_df$date_time %>% min()
+train_df$date_time %>% max()
+
+valid_df$date_time %>% min() 
+valid_df$date_time %>% max()
+
+trainvalid_df$date_time %>% min() 
+trainvalid_df$date_time %>% max()
+
+test_df$date_time %>% min()
+test_df$date_time %>% max()
+
+# Move to H2O
+h2o.init(max_mem_size = "8g")
+
+train_h2o <- as.h2o(train_df)
+valid_h2o <- as.h2o(valid_df)
+trainvalid_h2o <- as.h2o(trainvalid_df)
+test_h2o  <- as.h2o(test_df)
+
+# features: everything except date and the original y
+x <- setdiff(names(train_df), c("date_time", "western_hub_dalmp_average"))
+y <- "western_hub_dalmp_average"
+
+# Point forecast model
+dl_point <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,      # enables early stopping
+  distribution     = "gaussian",     # point forecast loss
+  hidden           = c(64, 64),      # small network
+
+  activation       = "RectifierWithDropout",
+  input_dropout_ratio   = 0.05,
+  hidden_dropout_ratios = c(0.2, 0.2),
+  l2 = 1e-4,
+  epochs = 100,                      # stop early if no val. improvement
+  stopping_rounds   = 5,
+  stopping_metric   = "RMSE",
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
+
+# 95% PI forecast model
+## Lower bound: 2.5% quantile
+dl_95_lo <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,
+  distribution     = "quantile",
+  quantile_alpha   = 0.025,          
+  hidden           = c(64, 64),
+  activation       = "RectifierWithDropout",
+  input_dropout_ratio   = 0.05,
+  hidden_dropout_ratios = c(0.2, 0.2),
+  l2 = 1e-4,
+  epochs = 100,
+  stopping_rounds   = 5,
+  stopping_metric   = "MAE",         
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
+
+## Upper bound: 97.5% quantile
+dl_95_hi <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,
+  distribution     = "quantile",
+  quantile_alpha   = 0.975,          
+  hidden           = c(64, 64),
+  activation       = "RectifierWithDropout",
+  input_dropout_ratio   = 0.05,
+  hidden_dropout_ratios = c(0.2, 0.2),
+  l2 = 1e-4,
+  epochs = 100,
+  stopping_rounds   = 5,
+  stopping_metric   = "MAE",
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
+
+# 85% PI forecast model
+## Lower bound: 7.5% quantile
+dl_85_lo <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,
+  distribution     = "quantile",
+  quantile_alpha   = 0.075,          
+  hidden           = c(64, 64),
+  activation       = "RectifierWithDropout",
+  input_dropout_ratio   = 0.05,
+  hidden_dropout_ratios = c(0.2, 0.2),
+  l2 = 1e-4,
+  epochs = 100,
+  stopping_rounds   = 5,
+  stopping_metric   = "MAE",         
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
+
+## Upper bound: 92.5% quantile
+dl_85_hi <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,
+  distribution     = "quantile",
+  quantile_alpha   = 0.925,          
+  hidden           = c(64, 64),
+  activation       = "RectifierWithDropout",
+  input_dropout_ratio   = 0.05,
+  hidden_dropout_ratios = c(0.2, 0.2),
+  l2 = 1e-4,
+  epochs = 100,
+  stopping_rounds   = 5,
+  stopping_metric   = "MAE",
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
+
+# 75% PI forecast model
+## Lower bound: 12.5% quantile
+dl_75_lo <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,
+  distribution     = "quantile",
+  quantile_alpha   = 0.125,          
+  hidden           = c(64, 64),
+  activation       = "RectifierWithDropout",
+  input_dropout_ratio   = 0.05,
+  hidden_dropout_ratios = c(0.2, 0.2),
+  l2 = 1e-4,
+  epochs = 100,
+  stopping_rounds   = 5,
+  stopping_metric   = "MAE",         
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
+
+## Upper bound: 87.5% quantile
+dl_75_hi <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,
+  distribution     = "quantile",
+  quantile_alpha   = 0.875,          
+  hidden           = c(64, 64),
+  activation       = "RectifierWithDropout",
+  input_dropout_ratio   = 0.05,
+  hidden_dropout_ratios = c(0.2, 0.2),
+  l2 = 1e-4,
+  epochs = 100,
+  stopping_rounds   = 5,
+  stopping_metric   = "MAE",
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
+
+# 65% PI forecast model
+## Lower bound: 17.5% quantile
+dl_65_lo <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,
+  distribution     = "quantile",
+  quantile_alpha   = 0.175,          
+  hidden           = c(64, 64),
+  activation       = "RectifierWithDropout",
+  input_dropout_ratio   = 0.05,
+  hidden_dropout_ratios = c(0.2, 0.2),
+  l2 = 1e-4,
+  epochs = 100,
+  stopping_rounds   = 5,
+  stopping_metric   = "MAE",         
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
+
+## Upper bound: 82.5% quantile
+dl_65_hi <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,
+  distribution     = "quantile",
+  quantile_alpha   = 0.825,          
+  hidden           = c(64, 64),
+  activation       = "RectifierWithDropout",
+  input_dropout_ratio   = 0.05,
+  hidden_dropout_ratios = c(0.2, 0.2),
+  l2 = 1e-4,
+  epochs = 100,
+  stopping_rounds   = 5,
+  stopping_metric   = "MAE",
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
+
+# Score the test set and combine results ---
+pred_point <- h2o.predict(dl_point, test_h2o) %>% as.data.frame()
+
+pred_95_lo <- h2o.predict(dl_95_lo, test_h2o) %>% as.data.frame()
+pred_95_hi <- h2o.predict(dl_95_hi, test_h2o) %>% as.data.frame()
+
+pred_85_lo <- h2o.predict(dl_85_lo, test_h2o) %>% as.data.frame()
+pred_85_hi <- h2o.predict(dl_85_hi, test_h2o) %>% as.data.frame()
+
+pred_75_lo <- h2o.predict(dl_75_lo, test_h2o) %>% as.data.frame()
+pred_75_hi <- h2o.predict(dl_75_hi, test_h2o) %>% as.data.frame()
+
+pred_65_lo <- h2o.predict(dl_65_lo, test_h2o) %>% as.data.frame()
+pred_65_hi <- h2o.predict(dl_65_hi, test_h2o) %>% as.data.frame()
+
+results <- test_df %>%
+  select(date_time, y) %>%
+  bind_cols(
+    yhat   = pred_point$predict,
+    lo95   = pred_95_lo$predict,
+    hi95   = pred_95_hi$predict,
+    lo85   = pred_85_lo$predict,
+    hi85   = pred_85_hi$predict,
+    lo75   = pred_75_lo$predict,
+    hi75   = pred_75_hi$predict,
+    lo65   = pred_65_lo$predict,
+    hi65   = pred_65_hi$predict
+  )
+
+
+#View(results)
+
+# fig 1
+f1 <- 
+  ggplot(results, aes(x = date_time)) +
+  
+  # plot prediction w/ band
+  geom_ribbon(aes(ymin = lo95, 
+                  ymax = hi95), 
+              fill = "grey95") +
+  geom_ribbon(aes(ymin = lo85, 
+                  ymax = hi85), 
+              fill = "grey85") +
+  geom_ribbon(aes(ymin = lo75, 
+                  ymax = hi75), 
+              fill = "grey75") +
+  geom_ribbon(aes(ymin = lo65, 
+                  ymax = hi65), 
+              fill = "grey65") +
+  geom_line(aes(y = yhat),
+            linewidth = 1,
+            linetype = 'dotted') +
+  
+  # plot actual
+  geom_point(aes(y = western_hub_dalmp_average), 
+             size = 1.2, 
+             alpha = 0.7) +
+  geom_line(aes(y = western_hub_dalmp_average), 
+            linewidth = 1) +
+  ylab('DA-LMP') +
+  xlab('date')+
+  scale_x_date(date_breaks = "1 day", date_labels = "%b %d") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+# fig 2
+fig.df <-
+  results %>% 
+  filter(date_time == target) %>% 
+  pivot_longer(lo95 : hi65) %>% 
+  extract(
+    col   = name,                 # column to split
+    into  = c("bound", "width"),     # new columns: hi/lo and numeric width
+    regex = "^(hi|lo)(\\d+)$",       # capture 'hi' or 'lo' then digits
+    convert = TRUE                   # converts width to integer
+  ) %>% 
+  pivot_wider(names_from = 'bound',
+              values_from = 'value')
+
+f2 <- ggplot(data = fig.df,
+       aes(x = width)) +
+  geom_ribbon(aes(ymin = lo, 
+                  ymax = hi), 
+              fill = "grey95") +
+  # geom_errorbar(aes(ymin = lo, 
+  #                   ymax = hi), width = 2) +
+  geom_hline(yintercept = fig.df$yhat[1],
+             linetype = 'dotted') +
+  scale_x_continuous(breaks = c(65, 75, 85, 95)) +
+  labs(x = 'prediction interval width',
+       y = 'predicted DA-LMP',
+       title = paste(target,
+                     "prediction : $",
+                     fig.df$yhat[1] %>% round(3),
+                     " / MWh"))
+  
+
+# plot next to each other
+plot_grid(f1, 
+          plot_grid(f2, NA, ncol = 2),
+          nrow = 2)
+```
+
+
+# Start looking at weekends
+```{r}
+results.we <- results %>% 
+  # identify day of week
+  mutate(day = date_time %>% 
+           as.timeDate() %>% 
+           dayOfWeek()) %>% 
+  # estimate weekend strip
+  mutate(dalmp.lag = lag(western_hub_dalmp_average),
+         yhat.lag = lag(yhat),
+         lo95.lag = lag(lo95),
+         hi95.lag = lag(hi95),
+         lo85.lag = lag(lo85),
+         hi85.lag = lag(hi85),
+         lo75.lag = lag(lo75),
+         hi75.lag = lag(hi75),
+         lo65.lag = lag(lo65),
+         hi65.lag = lag(hi65)) %>% 
+  mutate(weekend.lmp = 
+           if_else(day == 'Sun',
+                   true = (western_hub_dalmp_average + dalmp.lag) / 2,
+                   NA),
+         weekend.yhat = 
+           if_else(day == 'Sun',
+                   true = (yhat + yhat.lag) / 2,
+                   NA),
+         weekend.lo95 = 
+           if_else(day == 'Sun',
+                   true = (lo95 + lo95.lag) / 2,
+                   NA),
+         weekend.hi95 = 
+           if_else(day == 'Sun',
+                   true = (hi95 + hi95.lag) / 2,
+                   NA),
+         weekend.lo85 = 
+           if_else(day == 'Sun',
+                   true = (lo85 + lo85.lag) / 2,
+                   NA),
+         weekend.hi85 = 
+           if_else(day == 'Sun',
+                   true = (hi85 + hi85.lag) / 2,
+                   NA),
+         weekend.lo75 = 
+           if_else(day == 'Sun',
+                   true = (lo75 + lo75.lag) / 2,
+                   NA),
+         weekend.hi75 = 
+           if_else(day == 'Sun',
+                   true = (hi75 + hi75.lag) / 2,
+                   NA),
+         weekend.lo65 = 
+           if_else(day == 'Sun',
+                   true = (lo65 + lo65.lag) / 2,
+                   NA),
+         weekend.hi65 = 
+           if_else(day == 'Sun',
+                   true = (hi65 + hi65.lag) / 2,
+                   NA)) %>% 
+  filter(!is.na(weekend.hi65)) %>% 
+  select(date_time,
+         weekend.lmp,
+         weekend.lo95 : weekend.hi65, 
+         weekend.yhat)
+```
+
+```{r}
+f1 <-
+  ggplot(results.we, aes(x = date_time)) +
+  
+  # plot prediction w/ band
+  geom_ribbon(aes(ymin = weekend.lo95, 
+                  ymax = weekend.hi95), 
+              fill = "grey95") +
+  geom_ribbon(aes(ymin = weekend.lo85, 
+                  ymax = weekend.hi85), 
+              fill = "grey85") +
+  geom_ribbon(aes(ymin = weekend.lo75, 
+                  ymax = weekend.hi75), 
+              fill = "grey75") +
+  geom_ribbon(aes(ymin = weekend.lo65, 
+                  ymax = weekend.hi65), 
+              fill = "grey65") +
+  geom_line(aes(y = weekend.yhat),
+            linewidth = 1,
+            linetype = 'dotted') +
+  
+  # plot actual
+  geom_point(aes(y = weekend.lmp), 
+             size = 1.2, 
+             alpha = 0.7) +
+  geom_line(aes(y = weekend.lmp), 
+            linewidth = 1) +
+  ylab('weekend DA-LMP') +
+  xlab('date')+
+  scale_x_date(date_breaks = "1 day", date_labels = "%b %d") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+```{r}
+target <- '2026-01-04'
+```
+
+```{r}
+fig.df <-
+  results.we %>% 
+  filter(date_time == target) %>% 
+  rename_with(~ str_remove(., "weekend.")) %>% 
+  pivot_longer(lo95 : hi65) %>% 
+  extract(
+    col   = name,                 # column to split
+    into  = c("bound", "width"),     # new columns: hi/lo and numeric width
+    regex = "^(hi|lo)(\\d+)$",       # capture 'hi' or 'lo' then digits
+    convert = TRUE                   # converts width to integer
+  ) %>% 
+  pivot_wider(names_from = 'bound',
+              values_from = 'value')
+
+f2 <- ggplot(data = fig.df,
+       aes(x = width)) +
+  geom_ribbon(aes(ymin = lo, 
+                  ymax = hi), 
+              fill = "grey95") +
+  # geom_errorbar(aes(ymin = lo, 
+  #                   ymax = hi), width = 2) +
+  geom_hline(yintercept = fig.df$yhat[1],
+             linetype = 'dotted') +
+  scale_x_continuous(breaks = c(65, 75, 85, 95)) +
+  labs(x = 'prediction interval width',
+       y = 'predicted weekend-LMP',
+       title = paste(target,
+                     "prediction : $",
+                     fig.df$yhat[1] %>% round(3),
+                     " / MWh"))
+```
+
+# Inspect accuracy of PIs
+```{r}
+result.cov <-
+  results.we %>%
+  rename_with(~ str_remove(., "weekend.")) %>% 
+  pivot_longer(lo95 : hi65) %>% 
+  extract(
+    col   = name,                 # column to split
+    into  = c("bound", "width"),     # new columns: hi/lo and numeric width
+    regex = "^(hi|lo)(\\d+)$",       # capture 'hi' or 'lo' then digits
+    convert = TRUE                   # converts width to integer
+  ) %>% 
+  pivot_wider(names_from = 'bound',
+              values_from = 'value') %>% 
+  mutate(hit = 
+           if_else(yhat > lo & yhat < hi,
+                   true = 1,
+                   false = 0),
+         )
+
+f3 <- result.cov %>% 
+  group_by(width) %>% 
+  summarise(accuracy = mean(hit) %>% 
+              round(3)) %>% 
+  rename('prediction interval width' = 'width',
+         'tested accuracy' = 'accuracy')
+
+# add summary info
+f3 <- result.cov %>% 
+  filter(as.character(result.cov$date_time) == target) %>% 
+  select(width, lo, hi) %>% 
+  mutate(lo = round(lo, 3),
+         hi = round(hi, 3)) %>% 
+  rename('prediction interval width' = 'width') %>% 
+  right_join(f3,
+             by = 'prediction interval width') %>% 
+  arrange(desc('prediction interval width')) %>% 
+  tableGrob(rows = NULL)
+
+# median accuracy
+result.cov %>% 
+  filter(!is.na(lmp)) %>% 
+  mutate(abs.err = abs(lmp - yhat)) %>% 
+  summarise(med.abs.err = mean(abs.err, na.rm = T))
+
+plot_grid(f1, 
+          plot_grid(f2, f3, ncol = 2),
+          nrow = 2,
+          rel_heights = c(1, .7))
+```
+
