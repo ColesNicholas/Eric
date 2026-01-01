@@ -30,13 +30,15 @@ set.seed(1967)
 ```
 
 # pull and prepare data from Google Drive
-```{r}
+```{r eval = F}
 # download from drive
 drive_download(
   as_id('18wpeytHVNN-PmJrM18DkFoWc8CnbUgE5'),
   path = "eia.input.xls",
   overwrite = TRUE)
+```
 
+```{r}
 # create dataset
 df <- 
   # open data
@@ -165,10 +167,23 @@ x <- setdiff(names(train_df), c("date_time", "western_hub_dalmp_average"))
 y <- "western_hub_dalmp_average"
 
 # Point forecast model
-dl_point <- h2o.automl(
+dl_point <- h2o.deeplearning(
   x = x, y = y,
-  training_frame   = trainvalid_h2o,
-  seed = 1967)
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,      # enables early stopping
+  distribution     = "gaussian",     # point forecast loss
+  hidden           = c(64, 64),      # small network
+
+  activation       = "RectifierWithDropout",
+  input_dropout_ratio   = 0.05,
+  hidden_dropout_ratios = c(0.2, 0.2),
+  l2 = 1e-4,
+  epochs = 100,                      # stop early if no val. improvement
+  stopping_rounds   = 5,
+  stopping_metric   = "RMSE",
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
 
 # 95% PI forecast model
 ## Lower bound: 2.5% quantile
@@ -358,7 +373,83 @@ results <- test_df %>%
 
 #View(results)
 
+# fig 1
+f1 <- 
+  ggplot(results, aes(x = date_time)) +
+  
+  # plot prediction w/ band
+  geom_ribbon(aes(ymin = lo95, 
+                  ymax = hi95), 
+              fill = "grey95") +
+  geom_ribbon(aes(ymin = lo85, 
+                  ymax = hi85), 
+              fill = "grey85") +
+  geom_ribbon(aes(ymin = lo75, 
+                  ymax = hi75), 
+              fill = "grey75") +
+  geom_ribbon(aes(ymin = lo65, 
+                  ymax = hi65), 
+              fill = "grey65") +
+  geom_line(aes(y = yhat),
+            linewidth = 1,
+            linetype = 'dotted') +
+  
+  # plot actual
+  geom_point(aes(y = western_hub_dalmp_average), 
+             size = 1.2, 
+             alpha = 0.7) +
+  geom_line(aes(y = western_hub_dalmp_average), 
+            linewidth = 1) +
+  ylab('DA-LMP') +
+  xlab('date')+
+  scale_x_date(date_breaks = "1 day", date_labels = "%b %d") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+# fig 2
+fig.df <-
+  results %>% 
+  filter(date_time == target) %>% 
+  pivot_longer(lo95 : hi65) %>% 
+  extract(
+    col   = name,                 # column to split
+    into  = c("bound", "width"),     # new columns: hi/lo and numeric width
+    regex = "^(hi|lo)(\\d+)$",       # capture 'hi' or 'lo' then digits
+    convert = TRUE                   # converts width to integer
+  ) %>% 
+  pivot_wider(names_from = 'bound',
+              values_from = 'value')
+
+f2 <- ggplot(data = fig.df,
+       aes(x = width)) +
+  geom_ribbon(aes(ymin = lo, 
+                  ymax = hi), 
+              fill = "grey95") +
+  # geom_errorbar(aes(ymin = lo, 
+  #                   ymax = hi), width = 2) +
+  geom_hline(yintercept = fig.df$yhat[1],
+             linetype = 'dotted') +
+  scale_x_continuous(breaks = c(65, 75, 85, 95)) +
+  labs(x = 'prediction interval width',
+       y = 'predicted DA-LMP',
+       title = paste(target,
+                     "prediction : $",
+                     fig.df$yhat[1] %>% round(3),
+                     " / MWh"))
+  
+
+# plot next to each other
+plot_grid(f1, 
+          plot_grid(f2, NA, ncol = 2),
+          nrow = 2)
+
+
 # Optional: plot
+
+
+
+
 ggplot(results, aes(x = date_time)) +
   
   # plot prediction w/ band
@@ -375,7 +466,7 @@ ggplot(results, aes(x = date_time)) +
              size = 1.2, 
              alpha = 0.7) +
   geom_line(aes(y = western_hub_dalmp_average), 
-            linewidth = 1)
+            linewidth = 1) +
   ylab('DA-LMP') +
   xlab('date')+
   scale_x_date(date_breaks = "1 day", date_labels = "%b %d") +
@@ -384,6 +475,31 @@ ggplot(results, aes(x = date_time)) +
   )
 
 ```
+
+# Inspect accuracy of PIs
+```{r}
+result.cov <-
+  results %>% 
+  pivot_longer(lo95 : hi65) %>% 
+  extract(
+    col   = name,                 # column to split
+    into  = c("bound", "width"),     # new columns: hi/lo and numeric width
+    regex = "^(hi|lo)(\\d+)$",       # capture 'hi' or 'lo' then digits
+    convert = TRUE                   # converts width to integer
+  ) %>% 
+  pivot_wider(names_from = 'bound',
+              values_from = 'value') %>% 
+  mutate(hit = 
+           if_else(yhat > lo & yhat < hi,
+                   true = 1,
+                   false = 0))
+
+result.cov %>% 
+  group_by(width) %>% 
+  summarise(accuracy = mean(hit))
+```
+
+
 
 # Inspect model behavior
 ```{r}
