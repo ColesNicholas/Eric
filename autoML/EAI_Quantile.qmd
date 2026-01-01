@@ -121,20 +121,23 @@ df_lag <-
                             "rto_combined_bidclose_load_forecast_average")), 
            lags = lags)
 
+rm(lags, add_lags)
 ```
 
-# Train model
+# Train models
 ```{r}
-# 2) Define 50-day validation and 50-day test windows
+# Define length of validation and test windows
 valid_days <- 50L
 test_days  <- 50L
 
+# indicate start of validateion and test windows
 test_start  <- max(df_lag$date_time) - days(test_days)
 valid_start <- test_start - days(valid_days)
 
-# 3) Create splits (time-based)
+# create splits (time-based)
 train_df <- df_lag %>% filter(date_time <= valid_start)
 valid_df <- df_lag %>% filter(date_time > valid_start & date_time <= test_start)
+trainvalid_df <- df_lag %>% filter(date_time <= test_start)
 test_df  <- df_lag %>% filter(date_time > test_start)
 
 train_df$date_time %>% min()
@@ -142,6 +145,9 @@ train_df$date_time %>% max()
 
 valid_df$date_time %>% min() 
 valid_df$date_time %>% max()
+
+trainvalid_df$date_time %>% min() 
+trainvalid_df$date_time %>% max()
 
 test_df$date_time %>% min()
 test_df$date_time %>% max()
@@ -151,48 +157,27 @@ h2o.init(max_mem_size = "8g")
 
 train_h2o <- as.h2o(train_df)
 valid_h2o <- as.h2o(valid_df)
+trainvalid_h2o <- as.h2o(trainvalid_df)
 test_h2o  <- as.h2o(test_df)
 
 # features: everything except date and the original y
 x <- setdiff(names(train_df), c("date_time", "western_hub_dalmp_average"))
 y <- "western_hub_dalmp_average"
 
-
-# Point forecast model (Gaussian GBM) ---
-# gbm_point <- h2o.gbm(
-#   x = x, y = y,
-#   training_frame   = train_h2o,
-#   distribution     = "gaussian",
-#   ntrees = 500,
-#   seed = 1967
-# )
-
-
-# Mean/central tendency
-dl_point <- h2o.deeplearning(
+# Point forecast model
+dl_point <- h2o.automl(
   x = x, y = y,
-  training_frame   = train_h2o,
-  validation_frame = valid_h2o,      # enables early stopping
-  distribution     = "gaussian",     # point forecast loss
-  hidden           = c(64, 64),      # small network
-  activation       = "RectifierWithDropout",
-  input_dropout_ratio   = 0.05,
-  hidden_dropout_ratios = c(0.2, 0.2),
-  l2 = 1e-4,
-  epochs = 100,                      # stop early if no val. improvement
-  stopping_rounds   = 5,
-  stopping_metric   = "RMSE",
-  stopping_tolerance = 1e-3,
-  seed = 1967
-)
+  training_frame   = trainvalid_h2o,
+  seed = 1967)
 
-# Lower bound: 2.5% quantile
-dl_lo <- h2o.deeplearning(
+# 95% PI forecast model
+## Lower bound: 2.5% quantile
+dl_95_lo <- h2o.deeplearning(
   x = x, y = y,
   training_frame   = train_h2o,
   validation_frame = valid_h2o,
   distribution     = "quantile",
-  quantile_alpha   = 0.025,          # lower tail
+  quantile_alpha   = 0.025,          
   hidden           = c(64, 64),
   activation       = "RectifierWithDropout",
   input_dropout_ratio   = 0.05,
@@ -200,18 +185,18 @@ dl_lo <- h2o.deeplearning(
   l2 = 1e-4,
   epochs = 100,
   stopping_rounds   = 5,
-  stopping_metric   = "MAE",         # aligns with quantile loss
+  stopping_metric   = "MAE",         
   stopping_tolerance = 1e-3,
   seed = 1967
 )
 
-# Upper bound: 97.5% quantile
-dl_hi <- h2o.deeplearning(
+## Upper bound: 97.5% quantile
+dl_95_hi <- h2o.deeplearning(
   x = x, y = y,
   training_frame   = train_h2o,
   validation_frame = valid_h2o,
   distribution     = "quantile",
-  quantile_alpha   = 0.975,          # upper tail
+  quantile_alpha   = 0.975,          
   hidden           = c(64, 64),
   activation       = "RectifierWithDropout",
   input_dropout_ratio   = 0.05,
@@ -224,59 +209,173 @@ dl_hi <- h2o.deeplearning(
   seed = 1967
 )
 
+# 85% PI forecast model
+## Lower bound: 7.5% quantile
+dl_85_lo <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,
+  distribution     = "quantile",
+  quantile_alpha   = 0.075,          
+  hidden           = c(64, 64),
+  activation       = "RectifierWithDropout",
+  input_dropout_ratio   = 0.05,
+  hidden_dropout_ratios = c(0.2, 0.2),
+  l2 = 1e-4,
+  epochs = 100,
+  stopping_rounds   = 5,
+  stopping_metric   = "MAE",         
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
 
-# Lower bound: 2.5% quantile
-# gbm_lo <- h2o.gbm(
-#   x = x, y = y,
-#   training_frame   = train_h2o,
-#   distribution     = "quantile",  # Quantile loss
-#   quantile_alpha   = 0.025,       # 2.5% quantile
-#   ntrees = 500,
-#   seed = 1967
-# )
+## Upper bound: 92.5% quantile
+dl_85_hi <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,
+  distribution     = "quantile",
+  quantile_alpha   = 0.925,          
+  hidden           = c(64, 64),
+  activation       = "RectifierWithDropout",
+  input_dropout_ratio   = 0.05,
+  hidden_dropout_ratios = c(0.2, 0.2),
+  l2 = 1e-4,
+  epochs = 100,
+  stopping_rounds   = 5,
+  stopping_metric   = "MAE",
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
 
-# Upper bound: 97.5% quantile
-# gbm_hi <- h2o.gbm(
-#   x = x, y = y,
-#   training_frame   = train_h2o,
-#   validation_frame = test_h2o,
-#   distribution     = "quantile",
-#   quantile_alpha   = 0.975,       # 97.5% quantile
-#   ntrees = 1200,
-#   seed = 1967
-# )
+# 75% PI forecast model
+## Lower bound: 12.5% quantile
+dl_75_lo <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,
+  distribution     = "quantile",
+  quantile_alpha   = 0.125,          
+  hidden           = c(64, 64),
+  activation       = "RectifierWithDropout",
+  input_dropout_ratio   = 0.05,
+  hidden_dropout_ratios = c(0.2, 0.2),
+  l2 = 1e-4,
+  epochs = 100,
+  stopping_rounds   = 5,
+  stopping_metric   = "MAE",         
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
 
+## Upper bound: 87.5% quantile
+dl_75_hi <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,
+  distribution     = "quantile",
+  quantile_alpha   = 0.875,          
+  hidden           = c(64, 64),
+  activation       = "RectifierWithDropout",
+  input_dropout_ratio   = 0.05,
+  hidden_dropout_ratios = c(0.2, 0.2),
+  l2 = 1e-4,
+  epochs = 100,
+  stopping_rounds   = 5,
+  stopping_metric   = "MAE",
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
+
+# 65% PI forecast model
+## Lower bound: 17.5% quantile
+dl_65_lo <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,
+  distribution     = "quantile",
+  quantile_alpha   = 0.175,          
+  hidden           = c(64, 64),
+  activation       = "RectifierWithDropout",
+  input_dropout_ratio   = 0.05,
+  hidden_dropout_ratios = c(0.2, 0.2),
+  l2 = 1e-4,
+  epochs = 100,
+  stopping_rounds   = 5,
+  stopping_metric   = "MAE",         
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
+
+## Upper bound: 82.5% quantile
+dl_65_hi <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,
+  distribution     = "quantile",
+  quantile_alpha   = 0.825,          
+  hidden           = c(64, 64),
+  activation       = "RectifierWithDropout",
+  input_dropout_ratio   = 0.05,
+  hidden_dropout_ratios = c(0.2, 0.2),
+  l2 = 1e-4,
+  epochs = 100,
+  stopping_rounds   = 5,
+  stopping_metric   = "MAE",
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
 
 # Score the test set and combine results ---
 pred_point <- h2o.predict(dl_point, test_h2o) %>% as.data.frame()
-pred_lo    <- h2o.predict(dl_lo,    test_h2o) %>% as.data.frame()
-pred_hi    <- h2o.predict(dl_hi,    test_h2o) %>% as.data.frame()
+
+pred_95_lo <- h2o.predict(dl_95_lo, test_h2o) %>% as.data.frame()
+pred_95_hi <- h2o.predict(dl_95_hi, test_h2o) %>% as.data.frame()
+
+pred_85_lo <- h2o.predict(dl_85_lo, test_h2o) %>% as.data.frame()
+pred_85_hi <- h2o.predict(dl_85_hi, test_h2o) %>% as.data.frame()
+
+pred_75_lo <- h2o.predict(dl_75_lo, test_h2o) %>% as.data.frame()
+pred_75_hi <- h2o.predict(dl_75_hi, test_h2o) %>% as.data.frame()
+
+pred_65_lo <- h2o.predict(dl_65_lo, test_h2o) %>% as.data.frame()
+pred_65_hi <- h2o.predict(dl_65_hi, test_h2o) %>% as.data.frame()
 
 results <- test_df %>%
   select(date_time, y) %>%
   bind_cols(
     yhat   = pred_point$predict,
-    lo95   = pred_lo$predict,
-    hi95   = pred_hi$predict
-  ) %>% 
-  mutate(hit = 
-           if_else(western_hub_dalmp_average < hi95 &
-                     western_hub_dalmp_average > lo95,
-                   'yes',
-                   'no'))
+    lo95   = pred_95_lo$predict,
+    hi95   = pred_95_hi$predict,
+    lo85   = pred_85_lo$predict,
+    hi85   = pred_85_hi$predict,
+    lo75   = pred_75_lo$predict,
+    hi75   = pred_75_hi$predict,
+    lo65   = pred_65_lo$predict,
+    hi65   = pred_65_hi$predict
+  )
 
-results$hit %>% table %>% prop.table
 
 #View(results)
 
 # Optional: plot
 ggplot(results, aes(x = date_time)) +
-  geom_ribbon(aes(ymin = lo95, ymax = hi95), fill = "skyblue", alpha = 0.25) +
-  geom_line(aes(y = yhat), color = "steelblue", linewidth = 1) +
-  geom_point(aes(y = western_hub_dalmp_average,
-                 color = hit), 
+  
+  # plot prediction w/ band
+  geom_ribbon(aes(ymin = lo95, 
+                  ymax = hi95), 
+              fill = "skyblue", 
+              alpha = 0.25) +
+  geom_line(aes(y = yhat), 
+            color = "steelblue", 
+            linewidth = 1) +
+  
+  # plot actual
+  geom_point(aes(y = western_hub_dalmp_average), 
              size = 1.2, 
              alpha = 0.7) +
+  geom_line(aes(y = western_hub_dalmp_average), 
+            linewidth = 1)
   ylab('DA-LMP') +
   xlab('date')+
   scale_x_date(date_breaks = "1 day", date_labels = "%b %d") +
