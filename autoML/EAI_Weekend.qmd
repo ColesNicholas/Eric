@@ -34,8 +34,8 @@ set.seed(1967)
 ```{r eval = F}
 # download from drive
 drive_download(
-  as_id('18wpeytHVNN-PmJrM18DkFoWc8CnbUgE5'),
-  path = "eia.input.xls",
+  as_id('1V6s51wjw2zwVVJTPb-TpkOCxu-PT8vMX'),
+  path = "eia.input.xlsx",
   overwrite = TRUE)
 ```
 
@@ -43,7 +43,7 @@ drive_download(
 # create dataset
 df <- 
   # open data
-  read_xls('eia.input.xls') %>% 
+  read_xlsx('eia.input.xlsx') %>% 
   
   # if gas price missing, use rolling average of past three days
   mutate(
@@ -598,15 +598,16 @@ result.cov <-
   ) %>% 
   pivot_wider(names_from = 'bound',
               values_from = 'value') %>% 
-  mutate(hit = 
-           if_else(yhat > lo & yhat < hi,
+  mutate(abs.err = abs(lmp - yhat),
+         hit = 
+           if_else(lmp > lo & lmp < hi,
                    true = 1,
-                   false = 0),
+                   false = 0)
          )
 
 f3 <- result.cov %>% 
   group_by(width) %>% 
-  summarise(accuracy = mean(hit) %>% 
+  summarise(accuracy = mean(hit, na.rm = T) %>% 
               round(3)) %>% 
   rename('prediction interval width' = 'width',
          'tested accuracy' = 'accuracy')

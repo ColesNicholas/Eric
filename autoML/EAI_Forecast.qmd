@@ -43,7 +43,7 @@ drive_download(
 # create dataset
 df <- 
   # open data
-  read_xls('eia.input.xls') %>% 
+  read_xlsx('eia.input.xlsx') %>% 
   
   # clean variable names and structures
   clean_names() %>% 
@@ -60,16 +60,32 @@ df <-
          ) %>% 
   # create squared load predictor (at request of human Nick)
   mutate(load_sqr = rto_combined_bidclose_load_forecast_average ^ 2)
+
+# remove anything we wouldn't have for future
+df <- df %>% 
+  select(-c(
+    rto_combined_net_load_forecast_bid_close_average,
+    rto_combined_net_load_forecast_bid_close_maximum,
+    
+    rto_combined_bidclose_solarfcst_hourly_average,    
+    rto_combined_bidclose_winddata_stf_average, 
+    
+    
+    henry_gasprice_average, tetco_m3_gasprice_average,
+    
+    
+    anl.go, mnl.go)
+    )
 ```
 
 # Specify the date we are targeting and (if necessary), input values
 ```{r}
-target <- '2026-01-03'
+target <- '2026-01-06'
 ```
 
-# Add 1, 2, 7-day lags of y and all exogenous vars
+# Add lags of y and all exogenous vars
 ```{r}
-lags <- c(1, 2, 7)
+lags <- c(7, 8, 9, 365, 366)
 
 add_lags <- 
   function(data, 
@@ -436,7 +452,7 @@ result.cov <-
                    true = 1,
                    false = 0))
 
-result.cov$abs.err %>% median(na.rm = T) 
+result.cov$abs.err  %>% median(na.rm = T) 
 result.cov$abs.err %>% mean(na.rm = T)
 
 f3 <- result.cov %>% 
