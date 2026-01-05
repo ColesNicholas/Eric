@@ -43,7 +43,7 @@ drive_download(
 # create dataset
 df <- 
   # open data
-  read_xlsx('eia.input.xlsx') %>% 
+  read_xlsx('/blue/ncoles/ncoles/eai/eia.input.xlsx') %>% 
   
   # clean variable names and structures
   clean_names() %>% 
@@ -134,7 +134,7 @@ test_df$date_time %>% min()
 test_df$date_time %>% max()
 
 # Move to H2O
-h2o.init(max_mem_size = "8g")
+h2o.init()
 
 train_h2o <- as.h2o(train_df)
 valid_h2o <- as.h2o(valid_df)
@@ -150,204 +150,229 @@ y <- "western_hub_dalmp_average"
 
 Quick automl
 ```{r}
+# fit 
 automl <-
   h2o.automl(x = x,
              y = y,
-             training_frame = train_h2o,
-             validation_frame = valid_h2o,
-             nfolds = 0)
+             training_frame = trainvalid_h2o)
+
+# evaluate
+pred <- h2o.predict(automl, test_h2o)
+
+results <- test_h2o %>% as.data.frame()
+
+results$pred <- pred %>% as.vector()
+
+results <- results %>%
+  mutate(abs.err = abs(western_hub_dalmp_average - pred))
+
+results$abs.err %>% median(na.rm = T)
 ```
 
-
+Extract key parameters
 ```{r}
-# Point forecast model
-dl_point <- h2o.deeplearning(
-  x = x, y = y,
-  training_frame   = train_h2o,
-  validation_frame = valid_h2o,      # enables early stopping
-  distribution     = "gaussian",     # point forecast loss
-  hidden           = c(64, 64),      # small network
+h2o.get_leaderboard(automl)
+h2o.getModel('DeepLearning_grid_1_AutoML_1_20260103_195938_model_30')
 
-  activation       = "RectifierWithDropout",
-  input_dropout_ratio   = 0.05,
-  hidden_dropout_ratios = c(0.2, 0.2),
-  l2 = 1e-4,
-  epochs = 100,                      # stop early if no val. improvement
-  stopping_rounds   = 5,
-  stopping_metric   = "RMSE",
-  stopping_tolerance = 1e-3,
-  seed = 1967
-)
+param <- h2o.getModel('DeepLearning_grid_1_AutoML_1_20260103_195938_model_37')@parameters
+```
 
-# 95% PI forecast model
-## Lower bound: 2.5% quantile
+Estimate prediction intervals
+```{r}
+# 95
 dl_95_lo <- h2o.deeplearning(
   x = x, y = y,
-  training_frame   = train_h2o,
-  validation_frame = valid_h2o,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
   distribution     = "quantile",
-  quantile_alpha   = 0.025,          
-  hidden           = c(64, 32, 16),
-  activation       = "TanhWithDropout",
-  input_dropout_ratio   = 0.10,
-  hidden_dropout_ratios = c(0.3, 0.3, 0.3),
-  l2 = 5e-4,
-  epochs = 200,
-  stopping_rounds   = 10,
-  stopping_metric   = "MAE",         
-  stopping_tolerance = 1e-3,
-  seed = 1967
+  quantile_alpha   = 0.025
 )
 
-## Upper bound: 97.5% quantile
 dl_95_hi <- h2o.deeplearning(
   x = x, y = y,
-  training_frame   = train_h2o,
-  validation_frame = valid_h2o,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
   distribution     = "quantile",
-  quantile_alpha   = 0.975,          
-  hidden           = c(64, 32, 16),
-  activation       = "TanhWithDropout",
-  input_dropout_ratio   = 0.10,
-  hidden_dropout_ratios = c(0.3, 0.3, 0.3),
-  l2 = 5e-4,
-  epochs = 200,
-  stopping_rounds   = 10,
-  stopping_metric   = "MAE",
-  stopping_tolerance = 1e-3,
-  seed = 1967
+  quantile_alpha   = 0.975
 )
 
-# 85% PI forecast model
-## Lower bound: 7.5% quantile
+# 85
 dl_85_lo <- h2o.deeplearning(
   x = x, y = y,
-  training_frame   = train_h2o,
-  validation_frame = valid_h2o,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
   distribution     = "quantile",
-  quantile_alpha   = 0.075,          
-  hidden           = c(64, 32, 16),
-  activation       = "TanhWithDropout",
-  input_dropout_ratio   = 0.10,
-  hidden_dropout_ratios = c(0.3, 0.3, 0.3),
-  l2 = 5e-4,
-  epochs = 200,
-  stopping_rounds   = 10,
-  stopping_metric   = "MAE",         
-  stopping_tolerance = 1e-3,
-  seed = 1967
+  quantile_alpha   = 0.075
 )
 
-## Upper bound: 92.5% quantile
 dl_85_hi <- h2o.deeplearning(
   x = x, y = y,
-  training_frame   = train_h2o,
-  validation_frame = valid_h2o,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
   distribution     = "quantile",
-  quantile_alpha   = 0.925,          
-  hidden           = c(64, 32, 16),
-  activation       = "TanhWithDropout",
-  input_dropout_ratio   = 0.10,
-  hidden_dropout_ratios = c(0.3, 0.3, 0.3),
-  l2 = 5e-4,
-  epochs = 200,
-  stopping_rounds   = 10,
-  stopping_metric   = "MAE",
-  stopping_tolerance = 1e-3,
-  seed = 1967
+  quantile_alpha   = 0.925
 )
 
-# 75% PI forecast model
-## Lower bound: 12.5% quantile
+# 75
 dl_75_lo <- h2o.deeplearning(
   x = x, y = y,
-  training_frame   = train_h2o,
-  validation_frame = valid_h2o,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
   distribution     = "quantile",
-  quantile_alpha   = 0.125,          
-  hidden           = c(64, 32, 16),
-  activation       = "TanhWithDropout",
-  input_dropout_ratio   = 0.10,
-  hidden_dropout_ratios = c(0.3, 0.3, 0.3),
-  l2 = 5e-4,
-  epochs = 200,
-  stopping_rounds   = 10,
-  stopping_metric   = "MAE",         
-  stopping_tolerance = 1e-3,
-  seed = 1967
+  quantile_alpha   = 0.125
 )
 
-## Upper bound: 87.5% quantile
 dl_75_hi <- h2o.deeplearning(
   x = x, y = y,
-  training_frame   = train_h2o,
-  validation_frame = valid_h2o,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
   distribution     = "quantile",
-  quantile_alpha   = 0.875,          
-  hidden           = c(64, 32, 16),
-  activation       = "TanhWithDropout",
-  input_dropout_ratio   = 0.10,
-  hidden_dropout_ratios = c(0.3, 0.3, 0.3),
-  l2 = 5e-4,
-  epochs = 200,
-  stopping_rounds   = 10,
-  stopping_metric   = "MAE",
-  stopping_tolerance = 1e-3,
-  seed = 1967
+  quantile_alpha   = 0.875
 )
 
-# 65% PI forecast model
-## Lower bound: 17.5% quantile
+# 65
 dl_65_lo <- h2o.deeplearning(
   x = x, y = y,
-  training_frame   = train_h2o,
-  validation_frame = valid_h2o,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
   distribution     = "quantile",
-  quantile_alpha   = 0.175,          
-  hidden           = c(64, 32, 16),
-  activation       = "TanhWithDropout",
-  input_dropout_ratio   = 0.10,
-  hidden_dropout_ratios = c(0.3, 0.3, 0.3),
-  l2 = 5e-4,
-  epochs = 200,
-  stopping_rounds   = 10,
-  stopping_metric   = "MAE",         
-  stopping_tolerance = 1e-3,
-  seed = 1967
+  quantile_alpha   = 0.175
 )
 
-## Upper bound: 82.5% quantile
 dl_65_hi <- h2o.deeplearning(
   x = x, y = y,
-  training_frame   = train_h2o,
-  validation_frame = valid_h2o,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
   distribution     = "quantile",
-  quantile_alpha   = 0.825,          
-  hidden           = c(64, 32, 16),
-  activation       = "TanhWithDropout",
-  input_dropout_ratio   = 0.10,
-  hidden_dropout_ratios = c(0.3, 0.3, 0.3),
-  l2 = 5e-4,
-  epochs = 200,
-  stopping_rounds   = 10,
-  stopping_metric   = "MAE",
-  stopping_tolerance = 1e-3,
-  seed = 1967
-)
+  quantile_alpha   = 0.825)
+```
 
-  # Score the test set and combine results ---
-  pred_point <- h2o.predict(dl_point, test_h2o) %>% as.data.frame()
-  
-  pred_95_lo <- h2o.predict(dl_95_lo, test_h2o) %>% as.data.frame()
-  pred_95_hi <- h2o.predict(dl_95_hi, test_h2o) %>% as.data.frame()
-  
-  pred_85_lo <- h2o.predict(dl_85_lo, test_h2o) %>% as.data.frame()
-  pred_85_hi <- h2o.predict(dl_85_hi, test_h2o) %>% as.data.frame()
-  
-  pred_75_lo <- h2o.predict(dl_75_lo, test_h2o) %>% as.data.frame()
-  pred_75_hi <- h2o.predict(dl_75_hi, test_h2o) %>% as.data.frame()
-  
-  pred_65_lo <- h2o.predict(dl_65_lo, test_h2o) %>% as.data.frame()
+```{r}
+# Score the test set and combine results ---
+pred_point <- h2o.predict(automl, test_h2o) %>% as.data.frame()
+
+pred_95_lo <- h2o.predict(dl_95_lo, test_h2o) %>% as.data.frame()
+pred_95_hi <- h2o.predict(dl_95_hi, test_h2o) %>% as.data.frame()
+
+pred_85_lo <- h2o.predict(dl_85_lo, test_h2o) %>% as.data.frame()
+pred_85_hi <- h2o.predict(dl_85_hi, test_h2o) %>% as.data.frame()
+
+pred_75_lo <- h2o.predict(dl_75_lo, test_h2o) %>% as.data.frame()
+pred_75_hi <- h2o.predict(dl_75_hi, test_h2o) %>% as.data.frame()
+
+pred_65_lo <- h2o.predict(dl_65_lo, test_h2o) %>% as.data.frame()
 pred_65_hi <- h2o.predict(dl_65_hi, test_h2o) %>% as.data.frame()
 
 results <- test_df %>%
