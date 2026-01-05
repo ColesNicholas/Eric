@@ -1,0 +1,593 @@
+---
+title: "Eric_AutoML.qmd"
+author: "Nicholas a. Coles"
+format: html
+editor_options: 
+  chunk_output_type: console
+---
+# load libraries and data
+```{r}
+# for pulling google drive data
+library(googledrive)
+library(readr)
+
+# time series autoML
+library(h2o)
+library(iForecast)
+library(zoo)
+library(slider)
+
+# data processing
+library(tidyverse)
+library(readxl)
+library(janitor)
+library(cowplot)
+library(gridExtra)
+
+# idiosyncratic settings
+theme_set(theme_classic())
+options(scipen = 999) # no sci notation
+set.seed(1967)
+```
+
+# pull and prepare data from Google Drive
+```{r eval = F}
+# download from drive
+drive_download(
+  as_id('1V6s51wjw2zwVVJTPb-TpkOCxu-PT8vMX'),
+  path = "eia.input.xls",
+  overwrite = TRUE)
+```
+
+```{r}
+# create dataset
+df <- 
+  # open data
+  read_xlsx('eia.input.xlsx') %>% 
+  
+  # clean variable names and structures
+  clean_names() %>% 
+  mutate(date_time = as.Date(date_time)) %>% 
+  
+  # add some variable suggestions from human Eric
+  mutate(al.go =  
+           rto_combined_bidclose_load_forecast_average / rto_combined_reg_total_gen_offline_capacity_average_latest,
+         ml.go = rto_combined_bidclose_load_forecast_maximum / rto_combined_reg_total_gen_offline_capacity_average_latest,
+         anl.go = rto_combined_net_load_forecast_bid_close_average / rto_combined_reg_total_gen_offline_capacity_average_latest,
+         mnl.go = rto_combined_net_load_forecast_bid_close_maximum / rto_combined_reg_total_gen_offline_capacity_average_latest,
+         dclm.al = a_b_c_a_bge_bidclose_load_forecast_b_pepco_bidclose_load_forecast_c_dominion_bidclose_load_forecast_maximum / rto_combined_bidclose_load_forecast_average,
+         malm.ml = mid_atlantic_region_bidclose_load_forecast_maximum / rto_combined_bidclose_load_forecast_maximum
+         ) %>% 
+  # create squared load predictor (at request of human Nick)
+  mutate(load_sqr = rto_combined_bidclose_load_forecast_average ^ 2)
+```
+
+# Specify the date we are targeting and (if necessary), input values
+```{r}
+target <- '2026-01-03'
+```
+
+# Add 1, 2, 7-day lags of y and all exogenous vars
+```{r}
+lags <- c(1, 2, 7)
+
+add_lags <- 
+  function(data, 
+           target, 
+           exog, 
+           lags) {
+    
+    out <- data
+    
+    # y lags
+    for (L in lags) {
+      out[[paste0(target, "_lag_", L)]] <- lag(out[[target]], L)
+    }
+    
+    # exogenous lags
+    for (col in exog) {
+      for (L in lags) {
+        out[[paste0(col, "_lag_", L)]] <- dplyr::lag(out[[col]], L)
+      }
+    }
+    out
+  }
+
+df_lag <- 
+  add_lags(data = df, 
+           target = "western_hub_dalmp_average", 
+           exog = setdiff(colnames(df), 
+                          c("date_time", "western_hub_dalmp_average",
+                            "rto_combined_bidclose_load_forecast_average")), 
+           lags = lags)
+
+rm(lags, add_lags)
+```
+
+# Train models
+Create train, validation, and test datasets
+```{r}
+# Define length of validation and test windows
+valid_days <- 50L
+test_days  <- 50L
+
+# indicate start of validateion and test windows
+test_start  <- max(df_lag$date_time) - days(test_days)
+valid_start <- test_start - days(valid_days)
+
+# create splits (time-based)
+train_df <- df_lag %>% filter(date_time <= valid_start)
+valid_df <- df_lag %>% filter(date_time > valid_start & date_time <= test_start)
+trainvalid_df <- df_lag %>% filter(date_time <= test_start)
+test_df  <- df_lag %>% filter(date_time > test_start)
+
+train_df$date_time %>% min()
+train_df$date_time %>% max()
+
+valid_df$date_time %>% min() 
+valid_df$date_time %>% max()
+
+trainvalid_df$date_time %>% min() 
+trainvalid_df$date_time %>% max()
+
+test_df$date_time %>% min()
+test_df$date_time %>% max()
+
+# Move to H2O
+h2o.init(max_mem_size = "8g")
+
+train_h2o <- as.h2o(train_df)
+valid_h2o <- as.h2o(valid_df)
+trainvalid_h2o <- as.h2o(trainvalid_df)
+test_h2o  <- as.h2o(test_df)
+```
+
+Specify predictors and outcome
+```{r}
+x <- setdiff(names(train_df), c("date_time", "western_hub_dalmp_average"))
+y <- "western_hub_dalmp_average"
+```
+
+Quick automl
+```{r}
+automl <-
+  h2o.automl(x = x,
+             y = y,
+             training_frame = train_h2o,
+             validation_frame = valid_h2o,
+             nfolds = 0)
+```
+
+
+```{r}
+# Point forecast model
+dl_point <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,      # enables early stopping
+  distribution     = "gaussian",     # point forecast loss
+  hidden           = c(64, 64),      # small network
+
+  activation       = "RectifierWithDropout",
+  input_dropout_ratio   = 0.05,
+  hidden_dropout_ratios = c(0.2, 0.2),
+  l2 = 1e-4,
+  epochs = 100,                      # stop early if no val. improvement
+  stopping_rounds   = 5,
+  stopping_metric   = "RMSE",
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
+
+# 95% PI forecast model
+## Lower bound: 2.5% quantile
+dl_95_lo <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,
+  distribution     = "quantile",
+  quantile_alpha   = 0.025,          
+  hidden           = c(64, 32, 16),
+  activation       = "TanhWithDropout",
+  input_dropout_ratio   = 0.10,
+  hidden_dropout_ratios = c(0.3, 0.3, 0.3),
+  l2 = 5e-4,
+  epochs = 200,
+  stopping_rounds   = 10,
+  stopping_metric   = "MAE",         
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
+
+## Upper bound: 97.5% quantile
+dl_95_hi <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,
+  distribution     = "quantile",
+  quantile_alpha   = 0.975,          
+  hidden           = c(64, 32, 16),
+  activation       = "TanhWithDropout",
+  input_dropout_ratio   = 0.10,
+  hidden_dropout_ratios = c(0.3, 0.3, 0.3),
+  l2 = 5e-4,
+  epochs = 200,
+  stopping_rounds   = 10,
+  stopping_metric   = "MAE",
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
+
+# 85% PI forecast model
+## Lower bound: 7.5% quantile
+dl_85_lo <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,
+  distribution     = "quantile",
+  quantile_alpha   = 0.075,          
+  hidden           = c(64, 32, 16),
+  activation       = "TanhWithDropout",
+  input_dropout_ratio   = 0.10,
+  hidden_dropout_ratios = c(0.3, 0.3, 0.3),
+  l2 = 5e-4,
+  epochs = 200,
+  stopping_rounds   = 10,
+  stopping_metric   = "MAE",         
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
+
+## Upper bound: 92.5% quantile
+dl_85_hi <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,
+  distribution     = "quantile",
+  quantile_alpha   = 0.925,          
+  hidden           = c(64, 32, 16),
+  activation       = "TanhWithDropout",
+  input_dropout_ratio   = 0.10,
+  hidden_dropout_ratios = c(0.3, 0.3, 0.3),
+  l2 = 5e-4,
+  epochs = 200,
+  stopping_rounds   = 10,
+  stopping_metric   = "MAE",
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
+
+# 75% PI forecast model
+## Lower bound: 12.5% quantile
+dl_75_lo <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,
+  distribution     = "quantile",
+  quantile_alpha   = 0.125,          
+  hidden           = c(64, 32, 16),
+  activation       = "TanhWithDropout",
+  input_dropout_ratio   = 0.10,
+  hidden_dropout_ratios = c(0.3, 0.3, 0.3),
+  l2 = 5e-4,
+  epochs = 200,
+  stopping_rounds   = 10,
+  stopping_metric   = "MAE",         
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
+
+## Upper bound: 87.5% quantile
+dl_75_hi <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,
+  distribution     = "quantile",
+  quantile_alpha   = 0.875,          
+  hidden           = c(64, 32, 16),
+  activation       = "TanhWithDropout",
+  input_dropout_ratio   = 0.10,
+  hidden_dropout_ratios = c(0.3, 0.3, 0.3),
+  l2 = 5e-4,
+  epochs = 200,
+  stopping_rounds   = 10,
+  stopping_metric   = "MAE",
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
+
+# 65% PI forecast model
+## Lower bound: 17.5% quantile
+dl_65_lo <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,
+  distribution     = "quantile",
+  quantile_alpha   = 0.175,          
+  hidden           = c(64, 32, 16),
+  activation       = "TanhWithDropout",
+  input_dropout_ratio   = 0.10,
+  hidden_dropout_ratios = c(0.3, 0.3, 0.3),
+  l2 = 5e-4,
+  epochs = 200,
+  stopping_rounds   = 10,
+  stopping_metric   = "MAE",         
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
+
+## Upper bound: 82.5% quantile
+dl_65_hi <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = train_h2o,
+  validation_frame = valid_h2o,
+  distribution     = "quantile",
+  quantile_alpha   = 0.825,          
+  hidden           = c(64, 32, 16),
+  activation       = "TanhWithDropout",
+  input_dropout_ratio   = 0.10,
+  hidden_dropout_ratios = c(0.3, 0.3, 0.3),
+  l2 = 5e-4,
+  epochs = 200,
+  stopping_rounds   = 10,
+  stopping_metric   = "MAE",
+  stopping_tolerance = 1e-3,
+  seed = 1967
+)
+
+  # Score the test set and combine results ---
+  pred_point <- h2o.predict(dl_point, test_h2o) %>% as.data.frame()
+  
+  pred_95_lo <- h2o.predict(dl_95_lo, test_h2o) %>% as.data.frame()
+  pred_95_hi <- h2o.predict(dl_95_hi, test_h2o) %>% as.data.frame()
+  
+  pred_85_lo <- h2o.predict(dl_85_lo, test_h2o) %>% as.data.frame()
+  pred_85_hi <- h2o.predict(dl_85_hi, test_h2o) %>% as.data.frame()
+  
+  pred_75_lo <- h2o.predict(dl_75_lo, test_h2o) %>% as.data.frame()
+  pred_75_hi <- h2o.predict(dl_75_hi, test_h2o) %>% as.data.frame()
+  
+  pred_65_lo <- h2o.predict(dl_65_lo, test_h2o) %>% as.data.frame()
+pred_65_hi <- h2o.predict(dl_65_hi, test_h2o) %>% as.data.frame()
+
+results <- test_df %>%
+  select(date_time, y) %>%
+  bind_cols(
+    yhat   = pred_point$predict,
+    lo95   = pred_95_lo$predict,
+    hi95   = pred_95_hi$predict,
+    lo85   = pred_85_lo$predict,
+    hi85   = pred_85_hi$predict,
+    lo75   = pred_75_lo$predict,
+    hi75   = pred_75_hi$predict,
+    lo65   = pred_65_lo$predict,
+    hi65   = pred_65_hi$predict
+  )
+
+
+#View(results)
+
+# fig 1
+f1 <- 
+  ggplot(results, aes(x = date_time)) +
+  
+  # plot prediction w/ band
+  geom_ribbon(aes(ymin = lo95, 
+                  ymax = hi95), 
+              fill = "grey95") +
+  geom_ribbon(aes(ymin = lo85, 
+                  ymax = hi85), 
+              fill = "grey85") +
+  geom_ribbon(aes(ymin = lo75, 
+                  ymax = hi75), 
+              fill = "grey75") +
+  geom_ribbon(aes(ymin = lo65, 
+                  ymax = hi65), 
+              fill = "grey65") +
+  geom_line(aes(y = yhat),
+            linewidth = 1,
+            linetype = 'dotted') +
+  
+  # plot actual
+  geom_point(aes(y = western_hub_dalmp_average), 
+             size = 1.2, 
+             alpha = 0.7) +
+  geom_line(aes(y = western_hub_dalmp_average), 
+            linewidth = 1) +
+  ylab('DA-LMP') +
+  xlab('date')+
+  scale_x_date(date_breaks = "1 day", date_labels = "%b %d") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+# fig 2
+fig.df <-
+  results %>% 
+  filter(date_time == target) %>% 
+  pivot_longer(lo95 : hi65) %>% 
+  extract(
+    col   = name,                 # column to split
+    into  = c("bound", "width"),     # new columns: hi/lo and numeric width
+    regex = "^(hi|lo)(\\d+)$",       # capture 'hi' or 'lo' then digits
+    convert = TRUE                   # converts width to integer
+  ) %>% 
+  pivot_wider(names_from = 'bound',
+              values_from = 'value')
+
+f2 <- ggplot(data = fig.df,
+       aes(x = width)) +
+  geom_ribbon(aes(ymin = lo, 
+                  ymax = hi), 
+              fill = "grey95") +
+  # geom_errorbar(aes(ymin = lo, 
+  #                   ymax = hi), width = 2) +
+  geom_hline(yintercept = fig.df$yhat[1],
+             linetype = 'dotted') +
+  scale_x_continuous(breaks = c(65, 75, 85, 95)) +
+  labs(x = 'prediction interval width',
+       y = 'predicted DA-LMP',
+       title = paste(target,
+                     "prediction : $",
+                     fig.df$yhat[1] %>% round(3),
+                     " / MWh"))
+```
+
+# Inspect accuracy of PIs
+```{r}
+result.cov <-
+  results %>% 
+  pivot_longer(lo95 : hi65) %>% 
+  extract(
+    col   = name,                 # column to split
+    into  = c("bound", "width"),     # new columns: hi/lo and numeric width
+    regex = "^(hi|lo)(\\d+)$",       # capture 'hi' or 'lo' then digits
+    convert = TRUE                   # converts width to integer
+  ) %>% 
+  pivot_wider(names_from = 'bound',
+              values_from = 'value') %>% 
+  mutate(abs.err = abs(western_hub_dalmp_average - yhat),
+         hit = 
+           if_else(western_hub_dalmp_average > lo & western_hub_dalmp_average < hi,
+                   true = 1,
+                   false = 0))
+
+result.cov$abs.err %>% median(na.rm = T) 
+result.cov$abs.err %>% mean(na.rm = T)
+
+f3 <- result.cov %>% 
+  group_by(width) %>% 
+  summarise(accuracy = mean(hit,
+                            na.rm = T),
+            accuracy = round(accuracy, 3)) %>% 
+  rename('prediction interval width' = 'width',
+         'tested accuracy' = 'accuracy')
+
+f3 <- result.cov %>% 
+  filter(as.character(result.cov$date_time) == target) %>% 
+  select(width, lo, hi) %>% 
+  mutate(lo = round(lo, 3),
+         hi = round(hi, 3)) %>% 
+  rename('prediction interval width' = 'width') %>% 
+  right_join(f3,
+             by = 'prediction interval width') %>% 
+  arrange(desc('prediction interval width')) %>% 
+  select(`prediction interval width`, `tested accuracy`, lo, hi) %>% 
+  tableGrob(rows = NULL)
+```
+
+# Plot
+```{r}
+# plot next to each other
+plot_grid(f1, 
+          plot_grid(f2, f3, ncol = 2),
+          nrow = 2,
+          rel_heights = c(1, .7))
+```
+
+# Inspect model behavior
+```{r}
+# feature reliance
+h2o.varimp_heatmap(object = automl$modelsUsed, 
+                   top_n = 10, 
+                   num_of_features = 20)
+```
+
+```{r}
+# compile test data it's never seen
+testData2 <- 
+  window(automl$data,
+         start = train.end,
+         end = end(automl$data))
+
+# create evaluation function
+EvalFun <- function(m){
+  
+  # predict out of sample using favorite model
+  preds <- 
+    h2o.predict(m, 
+                as.h2o(testData2)) %>% 
+    as.data.frame()
+  
+  # evaluate out-of-sample error
+  eval <-
+    # join dataset
+    cbind(testData2, 
+          preds) %>% 
+    as.data.frame() %>% 
+    rownames_to_column('time') %>%
+    
+    # calculate error
+    rowwise() %>% 
+    mutate(abs_error = abs(y - predict),
+           per_error = 
+             abs((y - predict) / y) * 100) %>% 
+    ungroup()
+  
+  return(eval)
+}
+
+# evaluate, remove target, and save
+m.eval <-
+  automl$output %>% 
+  EvalFun %>% 
+  mutate(reg = 
+           ntile(x = sqrt(load_sqr_L0),
+                 n = 4))
+
+df.target <- 
+  m.eval %>% 
+  filter(time == target)
+
+m.eval <- 
+  m.eval %>% 
+  filter(time != target)
+
+# medAE (medium absolute error, or typical wrongness): $6.15
+# medAbsolute Percentage Error (10.55%)
+median(m.eval$abs_error)
+median(m.eval$per_error)
+
+# regime
+metrics <-
+  m.eval %>% 
+  group_by(reg) %>% 
+  summarise(n = n(),
+            min.l = 
+              min(sqrt(load_sqr_L0)), 
+            max.l = 
+              max(sqrt(load_sqr_L0)), 
+            medae = 
+              median(abs_error), 
+            medape = 
+              median(per_error)
+            )
+
+# insight: especially tight at low prices
+plot(m.eval$rto_combined_bidclose_load_forecast_average_L0,
+     m.eval$per_error)
+```
+
+Identify target prediction
+```{r}
+# what's the regime?
+df.target$rto_combined_bidclose_load_forecast_average_L0
+df.target$reg
+
+# how have I been doing?  
+paste0("EAI predicts that the DA-LMP for ",
+       target,
+       " will be: $",
+       round(df.target$predict,
+             3))
+
+paste("In the past",
+      metrics[metrics$reg == df.target$reg, ]$n,
+      "tests on days with similar projected load regime,",
+      "its prediction have had a median absolute error of $",
+      metrics[metrics$reg == df.target$reg, ]$medae %>% 
+        round(2),
+      "($", metrics[metrics$reg == df.target$reg, ]$medape %>% 
+        round(2), "%)")
+df.target$predict
+```
