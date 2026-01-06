@@ -1,0 +1,117 @@
+---
+title: "EAI_EarlyGNN.qmd"
+author: "Nicholas a. Coles"
+format: html
+editor_options: 
+  chunk_output_type: console
+---
+```{r}
+# install.packages("reticulate") # uncomment if needed
+library(reticulate)
+
+# 1) Create a fresh conda env and select it
+env_name <- "autognn_clean"
+
+# Create a brand-new Python 3.11 environment (isolates from your previous attempts)
+reticulate::conda_create(envname = env_name, python_version = "3.11")
+
+# Use the new environment in this session
+reticulate::use_condaenv(env_name, required = TRUE)
+
+# 2) Upgrade build tooling
+py_run_string("
+import sys, subprocess
+subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel'])
+")
+
+# 3) Install PyTorch 2.8.0 (CPU-only wheels from official index)
+#    This avoids CUDA mismatch and provides a stable base for PyG wheels.
+py_run_string("
+import sys, subprocess
+subprocess.check_call([sys.executable, '-m', 'pip', 'install',
+  '--index-url', 'https://download.pytorch.org/whl/cpu',
+  'torch==2.8.0', 'torchvision', 'torchaudio'])
+")
+
+# 4) Install PyTorch Geometric (core) and its extension wheels *matching* Torch 2.8.0 CPU
+#    These extensions are required by many GNN ops and by libraries built on PyG.
+py_run_string("
+import sys, subprocess
+# Core
+subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'torch-geometric==2.7.0'])
+# Extensions via version-specific wheel index (Torch 2.8.0 + CPU)
+wheel_index = 'https://data.pyg.org/whl/torch-2.8.0+cpu.html'
+subprocess.check_call([sys.executable, '-m', 'pip', 'install',
+  'pyg_lib', 'torch_scatter', 'torch_sparse', 'torch_cluster', 'torch_spline_conv',
+  '-f', wheel_index])
+")
+
+# 5) Install AutoGL without NNI, then add remaining deps with safe pins
+#    NNI wheels are x86_64-only; building from source on ARM64 is possible but not needed for this demo.
+py_run_string("
+import sys, subprocess
+# Install AutoGL itself without pulling its dependencies (to avoid NNI)
+subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'autogl==0.4.0', '--no-deps'])
+
+# Install the rest of AutoGL's dependencies EXCEPT NNI, plus pins for NetworkX/pandas to match AutoGL's older API.
+deps = [
+  'bayesian-optimization','chocolate','dill','deeprobust','hyperopt','lightgbm',
+  'networkx==2.7',          # includes graph_number_of_cliques
+  'pandas==1.3.5',          # avoids .append deprecation issues noted by users
+  'numba',                  # wheels exist on macOS for py311
+  'netlsd','ogb','psutil','pyyaml','requests','scikit-learn','scipy','tabulate','tqdm'
+]
+subprocess.check_call([sys.executable, '-m', 'pip', 'install'] + deps)
+")
+
+# 6) Write a small Python script to train AutoGL on Cora and evaluate test accuracy.
+py_code <- "
+import torch
+from autogl.datasets import build_dataset_from_name
+from autogl.solver import AutoNodeClassifier
+from autogl.module.train import Acc
+
+# Device: prefer Apple Metal (MPS) if available; else CPU (CUDA not expected on Mac)
+if torch.backends.mps.is_available():
+    device = torch.device('mps')
+elif torch.cuda.is_available():
+    device = torch.device('cuda')
+else:
+    device = torch.device('cpu')
+
+print('Torch:', torch.__version__, '| Device:', device)
+
+# 1) Load Cora
+cora_dataset = build_dataset_from_name('cora')
+
+# 2) Minimal AutoGNN solver: DeepGL features + GCN/GAT + anneal HPO + voting ensemble
+solver = AutoNodeClassifier(
+    feature_module='deepgl',
+    graph_models=['gcn', 'gat'],
+    hpo_module='anneal',
+    ensemble_module='voting',
+    device=device,
+    max_evals=20  # small budget for reproducibility; increase for better accuracy
+)
+
+# 3) Fit (10-minute cap)
+solver.fit(cora_dataset, time_limit=600)
+
+# 4) Predict & evaluate
+predicted = solver.predict_proba()
+y_test = cora_dataset.data.y[cora_dataset.data.test_mask].cpu().numpy()
+test_acc = Acc.evaluate(predicted, y_test)
+print('AutoGNN (GCN/GAT + anneal + voting) test accuracy:', round(test_acc, 4))
+
+# Export the scalar back to R
+"
+
+# Write to a temp file (avoids indentation/string issues) and execute
+tmp_py <- tempfile(fileext = ".py")
+writeLines(py_code, tmp_py)
+py_run_file(tmp_py)
+
+# Pull the test accuracy back to R (printed by Python; if you want it in an R variable, re-expose as py$test_acc in the Python script)
+cat("\nDone. If the Python block printed a test accuracy above, the pipeline is working end-to-end.\n")
+```
+
