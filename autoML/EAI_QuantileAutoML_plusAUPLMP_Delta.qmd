@@ -34,8 +34,8 @@ set.seed(1967)
 ```{r eval = F}
 # download from drive
 drive_download(
-  as_id('1P_bOmPJ9aMMM_lkk2zC-0qtgQ12KICcr'),
-  path = "eia.input.xlsx",
+  as_id('1CZ9PwOr3TDqaV9tM2mv92KR0pl0W_Ghw'),
+  path = "eia.input.xls",
   overwrite = TRUE)
 ```
 
@@ -43,7 +43,7 @@ drive_download(
 # create dataset
 df <- 
   # open data
-  read_xlsx('eia.input.xlsx') %>% 
+  read_xls('eia.input.plus.xls') %>% 
   
   # clean variable names and structures
   clean_names() %>% 
@@ -55,16 +55,22 @@ df <-
          ml.go = rto_combined_bidclose_load_forecast_maximum / rto_combined_reg_total_gen_offline_capacity_average_latest,
          anl.go = rto_combined_net_load_forecast_bid_close_average / rto_combined_reg_total_gen_offline_capacity_average_latest,
          mnl.go = rto_combined_net_load_forecast_bid_close_maximum / rto_combined_reg_total_gen_offline_capacity_average_latest,
-         dclm.al = a_b_c_a_bge_bidclose_load_forecast_b_pepco_bidclose_load_forecast_c_dominion_bidclose_load_forecast_maximum / rto_combined_bidclose_load_forecast_average,
+         # dclm.al = a_b_c_a_bge_bidclose_load_forecast_b_pepco_bidclose_load_forecast_c_dominion_bidclose_load_forecast_maximum / rto_combined_bidclose_load_forecast_average,
          malm.ml = mid_atlantic_region_bidclose_load_forecast_maximum / rto_combined_bidclose_load_forecast_maximum
          ) %>% 
   # create squared load predictor (at request of human Nick)
-  mutate(load_sqr = rto_combined_bidclose_load_forecast_average ^ 2)
+  mutate(load_sqr = rto_combined_bidclose_load_forecast_average ^ 2) %>% 
+  
+  # for new experiment, focus on delta
+  rowwise %>% 
+  mutate(delta = 
+            western_hub_dalmp_average - aep_dayton_hub_dalmp_average) %>% 
+  ungroup()
 ```
 
 # Specify the date we are targeting and (if necessary), input values
 ```{r}
-target <- '2026-01-08'
+target <- '2026-01-07'
 ```
 
 # Add 1, 2, 7-day lags of y and all exogenous vars
@@ -95,12 +101,13 @@ add_lags <-
 
 df_lag <- 
   add_lags(data = df, 
-           target = "western_hub_dalmp_average", 
+           target = "delta", 
            exog = setdiff(colnames(df), 
-                          c("date_time",
-                            "western_hub_dalmp_average",
-                            "rto_combined_net_load_forecast_bid_close_average",
-                            "rto_combined_net_load_forecast_bid_close_maximum")),
+                          c("date_time", "delta",
+                            "rto_combined_bidclose_load_forecast_average",
+                            "aep_dayton_hub_dalmp_average", "western_hub_dalmp_average",
+                            "western_hub_dalmp_average", "n_illinois_hub_dalmp_average",
+                            "dominion_hub_dalmp_average", "eastern_hub_dalmp_average")), 
            lags = lags)
 
 rm(lags, add_lags)
@@ -146,10 +153,14 @@ test_h2o  <- as.h2o(test_df)
 
 Specify predictors and outcome
 ```{r}
-x <- setdiff(names(train_df), c("date_time", "western_hub_dalmp_average",
-                                "rto_combined_net_load_forecast_bid_close_average",
-                            "rto_combined_net_load_forecast_bid_close_maximum"))
-y <- "western_hub_dalmp_average"
+x <- setdiff(names(train_df), 
+             c("date_time", "western_hub_dalmp_average",
+               "rto_combined_bidclose_load_forecast_average",
+               "aep_dayton_hub_dalmp_average", "n_illinois_hub_dalmp_average",
+               "dominion_hub_dalmp_average", "eastern_hub_dalmp_average",
+               "western_hub_dalmp_average", "delta"))
+
+y <- "delta"
 ```
 
 Quick automl
@@ -168,7 +179,7 @@ results <- test_h2o %>% as.data.frame()
 results$pred <- pred %>% as.vector()
 
 results <- results %>%
-  mutate(abs.err = abs(western_hub_dalmp_average - pred))
+  mutate(abs.err = abs(aep_dayton_hub_dalmp_average - pred))
 
 results$abs.err %>% median(na.rm = T)
 ```
@@ -424,17 +435,6 @@ This needs to have median accuracy posted.
 
 This also needs to have a legend
 ```{r}
-# calculate summary notes
-note1 <-
-  abs(
-    results$yhat - results$western_hub_dalmp_average
-    ) %>% median(na.rm = T) %>% 
-  round(2)
-
-note1 <-
-  paste0('EAI absolute median error (deployment): $',
-         note1)
-
 ts <- 
   ggplot(results, aes(x = date_time)) +
   
@@ -456,16 +456,14 @@ ts <-
             linetype = 'dotted') +
   
   # plot actual
-  geom_point(aes(y = western_hub_dalmp_average), 
+  geom_point(aes(y = delta), 
              size = 1.2, 
              alpha = 0.7) +
-  geom_line(aes(y = western_hub_dalmp_average), 
+  geom_line(aes(y = delta), 
             linewidth = 1) +
-  labs(x = 'DA-LMP',
-       y  = 'date',
-       title = note1)+
+  ylab('DA-LMP') +
+  xlab('date')+
   scale_x_date(date_breaks = "1 day", date_labels = "%b %d") +
-  
   theme(
     axis.text.x = element_text(angle = 45, hjust = 1)
   )
@@ -676,13 +674,13 @@ summary <-
   ) %>% 
   pivot_wider(names_from = 'bound',
               values_from = 'value') %>% 
-  mutate(abs.err = abs(western_hub_dalmp_average - yhat),
+  mutate(abs.err = abs(delta - yhat),
          hit = 
-           if_else(western_hub_dalmp_average > lo & western_hub_dalmp_average < hi,
+           if_else(delta > lo & delta < hi,
                    true = 1,
                    false = 0))
 
-# last checked: $5.21
+# last checked: $5.21 ($4.59 with new variables)
 summary$abs.err %>% median(na.rm = T)
 
 summary2 <- summary %>% 
@@ -764,7 +762,7 @@ s.t4 <- summary %>%
   tableGrob(rows = NULL)
 ```
 
-```{r eval = f}
+```{r}
 s.t5 <- summary %>% 
   filter(as.character(date_time) == 
            as.Date(target) + days(5)) %>% 
@@ -812,9 +810,19 @@ predicted.value <-
     ev.t.input$hi65, ev.t.input$hi75,
     ev.t.input$hi85, ev.t.input$hi95)
 
+ggplot(data = cbind(p = p,
+                    q = q),
+       aes(x = p, y = q)) +
+  geom_point() +
+  geom_line() +
+  xlab('probability') +
+  ylab('price') +
+  geom_smooth(se = F)
+
 # Smooth spline fit
 fit <- smooth.spline(x = quantile, y = predicted.value, 
                      spar = 0.25, all.knots = TRUE)
+
 
 pred <- 
   predict(fit,
@@ -841,50 +849,133 @@ density_df <- data.frame(
 ggplot(density_df, aes(x = predicted_value, y = density)) +
   geom_smooth(se = F) +
   xlab('predicted price') +
-  ylab('density (larger == more probable)')
+  ylab('probablity of occuring')
+  
+  labs(title = "Implied Price Density",
+       x = "Predicted Price",
+       y = "Density") +
+  theme_minimal()
 
-# new stuff
 
-purchase_price <- 32
-payoff <- function(actual) actual - purchase_price # gain/loss
 
-# Compute payoff at each quantile
-g <- payoff(predicted.value)
 
-# Trapezoidal integration over p
-expected_value <- 
-  sum((head(g, -1) + tail(g, -1)) / 2 * diff(quantile))
+ # build a callable quantile function Q(u)
+Q <- function(u) {
+  # ensure u within observed range
+  predict(fit, u)$y
+}
 
-expected_value.anal <-
-  lapply(X = seq(20, 60, by = .05),
-         function(bid){
-           g <-
-             predicted.value - bid 
-           
-           expected_value <-
-             sum((head(g, -1) + tail(g, -1)) / 2 * diff(quantile))
-           
-           list(bid = bid,
-                expected_value = expected_value) %>% 
-             return()
-         }) %>% 
-  bind_rows() %>% 
-  mutate(rational = 
-           if_else(expected_value > 0,
-                   'yes',
-                   'no'))
 
-note <- 
-  paste0('max acceptable buy: $',
-    expected_value.anal[expected_value.anal$rational == 'yes', ]$bid %>%
-      max())
+# 5) Evaluate on a fine grid and compute approximate PDF
+u <- seq(0.001, 0.999, length.out = 1000)  # probability grid
+  value <- Q(u)                               # quantile values
 
-ggplot(data = expected_value.anal,
-       aes(x = bid, y = expected_value,
-           colour = rational)) +
-  geom_point() +
-  labs(title = note,
-       x = 'buy price',
-       y = 'expected value')
+# Numerical derivative: Q'(u) via central differences
+du <- c(diff(u), NA)
+dQ <- c(diff(value), NA)
+# To avoid NA at the last point, copy previous step
+du[length(du)] <- du[length(du)-1]
+dQ[length(dQ)] <- dQ[length(dQ)-1]
+
+# PDF estimate: f(v) = 1 / Q'(u) where v = Q(u)
+pdf_est <- 1 / (dQ / du)
+
+# Build tidy data frame: probability (u), value (quantile), cdf, pdf
+dist_df <- data.frame(
+  prob = u,
+  value = value,
+  cdf = u,
+  pdf = pdf_est
+)
+
+
+# Evaluate on a fine grid and compute approximate PDF
+u <- seq(0.001, 0.999, length.out = 1000)  # probability grid
+value <- Q(u)                               # quantile values
+
+
+
+# Turn into a function for integration
+curve_fn <- function(x) predict(fit, x)$y
+
+integrate(f = curve_fn,
+          lower = 0,
+          upper = 1)$value
+
+u <- seq(.001, .999,
+         length.out = 1000)
+y <- curve_fn(u)
+
+dist.df <- data.frame(probability = u,
+                      value = y)
+
+ggplot(dist.df,
+       aes(x = probability,
+           y = value)) +
+  geom_point()
+
+bids <- seq(0, 200, by = .25)
+
+expected_profit <-
+  function(bid){
+    integrate(f = curve_fn,
+          lower = 0,
+          upper = 1)$value
+  }
+
+for (b in bids){
+  tmp <- dist.df
+  
+  tmp$bid = b
+  
+  tmp <- tmp %>% 
+    rowwise() %>% 
+    mutate(error = value - bid,
+           ev = error * probability) %>% 
+    ungroup()
+  
+  return(mean(tmp$ev,
+              na.rm = T))
+}
+
+ev.curve.input <-
+  lapply(bids,
+       function(b){
+         tmp <- dist.df
+         
+         tmp$bid = b
+         
+         tmp <- tmp %>% 
+           rowwise() %>% 
+           mutate(error = value - bid,
+                  ev = error * probability) %>% 
+           ungroup()
+         
+         c(bid = b,
+           ev = mean(tmp$ev,
+                     na.rm = T)) %>% 
+           return()
+         
+       })
+
+ev.curve <- ev.curve.input %>% bind_rows()
+
+ggplot(ev.curve,
+       aes(x = ev,
+           y = bid)) +
+  geom_point()
+
+
+ggplot(tmp,
+       aes(probability,
+           value)) +
+  geom_point()
+
+ggplot(tmp,
+       aes(value,
+           ev)) +
+  geom_point(alpha = .05) +
+  geom_smooth()
+  
 ```
 

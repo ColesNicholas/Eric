@@ -34,8 +34,8 @@ set.seed(1967)
 ```{r eval = F}
 # download from drive
 drive_download(
-  as_id('1P_bOmPJ9aMMM_lkk2zC-0qtgQ12KICcr'),
-  path = "eia.input.xlsx",
+  as_id('1Zd_na5wepsE3e_yKQEsGfDIScReDHkfj'),
+  path = "eia.input.plus.xls",
   overwrite = TRUE)
 ```
 
@@ -43,7 +43,7 @@ drive_download(
 # create dataset
 df <- 
   # open data
-  read_xlsx('eia.input.xlsx') %>% 
+  read_xls('eia.input.plus.xls') %>% 
   
   # clean variable names and structures
   clean_names() %>% 
@@ -55,7 +55,7 @@ df <-
          ml.go = rto_combined_bidclose_load_forecast_maximum / rto_combined_reg_total_gen_offline_capacity_average_latest,
          anl.go = rto_combined_net_load_forecast_bid_close_average / rto_combined_reg_total_gen_offline_capacity_average_latest,
          mnl.go = rto_combined_net_load_forecast_bid_close_maximum / rto_combined_reg_total_gen_offline_capacity_average_latest,
-         dclm.al = a_b_c_a_bge_bidclose_load_forecast_b_pepco_bidclose_load_forecast_c_dominion_bidclose_load_forecast_maximum / rto_combined_bidclose_load_forecast_average,
+         # dclm.al = a_b_c_a_bge_bidclose_load_forecast_b_pepco_bidclose_load_forecast_c_dominion_bidclose_load_forecast_maximum / rto_combined_bidclose_load_forecast_average,
          malm.ml = mid_atlantic_region_bidclose_load_forecast_maximum / rto_combined_bidclose_load_forecast_maximum
          ) %>% 
   # create squared load predictor (at request of human Nick)
@@ -97,11 +97,14 @@ df_lag <-
   add_lags(data = df, 
            target = "western_hub_dalmp_average", 
            exog = setdiff(colnames(df), 
-                          c("date_time",
-                            "western_hub_dalmp_average",
-                            "rto_combined_net_load_forecast_bid_close_average",
-                            "rto_combined_net_load_forecast_bid_close_maximum")),
+                          c("date_time", "western_hub_dalmp_average",
+                            "rto_combined_bidclose_load_forecast_average",
+                            "aep_dayton_hub_dalmp_average", "n_illinois_hub_dalmp_average",
+                            "dominion_hub_dalmp_average", "eastern_hub_dalmp_average")), 
            lags = lags)
+
+df_lag$pjmiso_coalgen_hourly_average <- NA
+df_lag$pjmiso_nucleargen_hourly_average <- NA
 
 rm(lags, add_lags)
 ```
@@ -146,9 +149,12 @@ test_h2o  <- as.h2o(test_df)
 
 Specify predictors and outcome
 ```{r}
-x <- setdiff(names(train_df), c("date_time", "western_hub_dalmp_average",
-                                "rto_combined_net_load_forecast_bid_close_average",
-                            "rto_combined_net_load_forecast_bid_close_maximum"))
+x <- setdiff(names(train_df), 
+                          c("date_time", "western_hub_dalmp_average",
+                            "pjmiso_coalgen_hourly_average", "pjmiso_nucleargen_hourly_average",
+                            "aep_dayton_hub_dalmp_average", "n_illinois_hub_dalmp_average",
+                            "dominion_hub_dalmp_average", "eastern_hub_dalmp_average"))
+
 y <- "western_hub_dalmp_average"
 ```
 
@@ -682,7 +688,7 @@ summary <-
                    true = 1,
                    false = 0))
 
-# last checked: $5.21
+# last checked: $5.21 ($4.59 with new variables)
 summary$abs.err %>% median(na.rm = T)
 
 summary2 <- summary %>% 
@@ -764,7 +770,7 @@ s.t4 <- summary %>%
   tableGrob(rows = NULL)
 ```
 
-```{r eval = f}
+```{r}
 s.t5 <- summary %>% 
   filter(as.character(date_time) == 
            as.Date(target) + days(5)) %>% 
