@@ -386,6 +386,50 @@ dl_65_hi <- h2o.deeplearning(
   categorical_encoding = "OneHotInternal",
   distribution     = "quantile",
   quantile_alpha   = 0.825)
+
+# 55
+dl_55_lo <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
+  distribution     = "quantile",
+  quantile_alpha   = 0.225
+)
+
+dl_55_hi <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
+  distribution     = "quantile",
+  quantile_alpha   = 0.775)
 ```
 
 ```{r}
@@ -404,6 +448,9 @@ pred_75_hi <- h2o.predict(dl_75_hi, test_h2o) %>% as.data.frame()
 pred_65_lo <- h2o.predict(dl_65_lo, test_h2o) %>% as.data.frame()
 pred_65_hi <- h2o.predict(dl_65_hi, test_h2o) %>% as.data.frame()
 
+pred_55_lo <- h2o.predict(dl_55_lo, test_h2o) %>% as.data.frame()
+pred_55_hi <- h2o.predict(dl_55_hi, test_h2o) %>% as.data.frame()
+
 results <- test_df %>%
   select(date_time, y) %>%
   bind_cols(
@@ -415,7 +462,9 @@ results <- test_df %>%
     lo75   = pred_75_lo$predict,
     hi75   = pred_75_hi$predict,
     lo65   = pred_65_lo$predict,
-    hi65   = pred_65_hi$predict
+    hi65   = pred_65_hi$predict,
+    lo55   = pred_55_lo$predict,
+    hi55   = pred_55_hi$predict
   )
 ```
 
@@ -803,13 +852,11 @@ predicted.value <-
     ev.t.input$hi65, ev.t.input$hi75,
     ev.t.input$hi85, ev.t.input$hi95)
 
-ggplot(data = cbind(p = p,
-                    q = q),
-       aes(x = p, y = q)) +
+ggplot(data = cbind(p = predicted.value,
+                    q = quantile),
+       aes(x = quantile, y = predicted.value)) +
   geom_point() +
-  geom_line() +
-  xlab('probability') +
-  ylab('price') +
+  geom_line()
   geom_smooth(se = F)
 
 # Smooth spline fit

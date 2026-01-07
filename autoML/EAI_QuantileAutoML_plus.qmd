@@ -210,6 +210,73 @@ dl_point <- h2o.deeplearning(
   categorical_encoding = "OneHotInternal"
 )
 
+# 50
+dl_50 <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
+  distribution     = "quantile",
+  quantile_alpha   = .5)
+
+# 99
+dl_99_lo <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
+  distribution     = "quantile",
+  quantile_alpha   = 0.005
+)
+
+dl_99_hi <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
+  distribution     = "quantile",
+  quantile_alpha   = 0.995
+)
+
 # 95
 dl_95_lo <- h2o.deeplearning(
   x = x, y = y,
@@ -388,11 +455,236 @@ dl_65_hi <- h2o.deeplearning(
   categorical_encoding = "OneHotInternal",
   distribution     = "quantile",
   quantile_alpha   = 0.825)
+
+# 55
+dl_55_lo <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
+  distribution     = "quantile",
+  quantile_alpha   = 0.225
+)
+
+dl_55_hi <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
+  distribution     = "quantile",
+  quantile_alpha   = 0.775)
+
+# 45
+dl_45_lo <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
+  distribution     = "quantile",
+  quantile_alpha   = 0.275
+)
+
+dl_45_hi <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
+  distribution     = "quantile",
+  quantile_alpha   = 0.725)
+
+# 35
+dl_35_lo <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
+  distribution     = "quantile",
+  quantile_alpha   = 0.325
+)
+
+dl_35_hi <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
+  distribution     = "quantile",
+  quantile_alpha   = 0.675)
+
+# 25
+dl_25_lo <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
+  distribution     = "quantile",
+  quantile_alpha   = 0.375
+)
+
+dl_25_hi <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
+  distribution     = "quantile",
+  quantile_alpha   = 0.625)
+
+# 15
+dl_15_lo <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
+  distribution     = "quantile",
+  quantile_alpha   = 0.425
+)
+
+dl_15_hi <- h2o.deeplearning(
+  x = x, y = y,
+  training_frame   = trainvalid_h2o,
+  nfolds = 5,
+  fold_assignment = "Modulo",
+  overwrite_with_best_model = F,
+  activation       = "RectifierWithDropout",
+  hidden           = 50,
+  epochs = 7232.229,
+  seed = 1290607680847814765,
+  epsilon = 0.000000001,
+  input_dropout_ratio = 0.1,
+  hidden_dropout_ratios = 0.4,
+  stopping_rounds = 0,
+  stopping_metric = "deviance",
+  stopping_tolerance = 0.03809697,
+  max_runtime_secs = 714.006,
+  categorical_encoding = "OneHotInternal",
+  distribution     = "quantile",
+  quantile_alpha   = 0.575)
 ```
 
 ```{r}
 # Score the test set and combine results ---
 pred_point <- h2o.predict(dl_point, test_h2o) %>% as.data.frame()
+
+pred_50 <- h2o.predict(dl_50, test_h2o) %>% as.data.frame()
+
+pred_99_lo <- h2o.predict(dl_99_lo, test_h2o) %>% as.data.frame()
+pred_99_hi <- h2o.predict(dl_99_hi, test_h2o) %>% as.data.frame()
 
 pred_95_lo <- h2o.predict(dl_95_lo, test_h2o) %>% as.data.frame()
 pred_95_hi <- h2o.predict(dl_95_hi, test_h2o) %>% as.data.frame()
@@ -406,10 +698,27 @@ pred_75_hi <- h2o.predict(dl_75_hi, test_h2o) %>% as.data.frame()
 pred_65_lo <- h2o.predict(dl_65_lo, test_h2o) %>% as.data.frame()
 pred_65_hi <- h2o.predict(dl_65_hi, test_h2o) %>% as.data.frame()
 
+pred_55_lo <- h2o.predict(dl_55_lo, test_h2o) %>% as.data.frame()
+pred_55_hi <- h2o.predict(dl_55_hi, test_h2o) %>% as.data.frame()
+
+pred_45_lo <- h2o.predict(dl_45_lo, test_h2o) %>% as.data.frame()
+pred_45_hi <- h2o.predict(dl_45_hi, test_h2o) %>% as.data.frame()
+
+pred_35_lo <- h2o.predict(dl_35_lo, test_h2o) %>% as.data.frame()
+pred_35_hi <- h2o.predict(dl_35_hi, test_h2o) %>% as.data.frame()
+
+pred_25_lo <- h2o.predict(dl_25_lo, test_h2o) %>% as.data.frame()
+pred_25_hi <- h2o.predict(dl_25_hi, test_h2o) %>% as.data.frame()
+
+pred_15_lo <- h2o.predict(dl_15_lo, test_h2o) %>% as.data.frame()
+pred_15_hi <- h2o.predict(dl_15_hi, test_h2o) %>% as.data.frame()
+
 results <- test_df %>%
   select(date_time, y) %>%
   bind_cols(
     yhat   = pred_point$predict,
+    lo99   = pred_99_lo$predict,
+    hi99   = pred_99_hi$predict,
     lo95   = pred_95_lo$predict,
     hi95   = pred_95_hi$predict,
     lo85   = pred_85_lo$predict,
@@ -417,7 +726,18 @@ results <- test_df %>%
     lo75   = pred_75_lo$predict,
     hi75   = pred_75_hi$predict,
     lo65   = pred_65_lo$predict,
-    hi65   = pred_65_hi$predict
+    hi65   = pred_65_hi$predict,
+    lo55   = pred_55_lo$predict,
+    hi55   = pred_55_hi$predict,
+    lo45   = pred_45_lo$predict,
+    hi45   = pred_45_hi$predict,
+    lo35   = pred_35_lo$predict,
+    hi35   = pred_35_hi$predict,
+    lo25   = pred_25_lo$predict,
+    hi25   = pred_25_hi$predict,
+    lo15   = pred_15_lo$predict,
+    hi15   = pred_15_hi$predict,
+    med = pred_50$predict,
   )
 ```
 
@@ -805,63 +1125,44 @@ ev.t.input <-
   filter(date_time == target)
 
 quantile <- 
-  c(0.025, 0.075, 
+  c(0.005,
+    0.025, 0.075, 
     0.125, 0.175, 
-    0.50, 
+    0.225, 0.275, 
+    0.325, 0.375,
+    0.425,
+    0.50,
+    0.575,
+    0.625, 0.675,
+    0.725, 0.775, 
     0.825, 0.875, 
-    0.925, 0.975)
+    0.925, 0.975,
+    0.995)
 
 predicted.value <- 
-  c(ev.t.input$lo95, ev.t.input$lo85,
-    ev.t.input$lo75, ev.t.input$lo65,
-    ev.t.input$yhat,
+  c(ev.t.input$lo99,
+    ev.t.input$lo95, ev.t.input$lo85,
+    ev.t.input$lo75, ev.t.input$lo65, 
+    ev.t.input$lo55, ev.t.input$lo45,
+    ev.t.input$lo35, ev.t.input$lo25,
+    ev.t.input$lo15,
+    ev.t.input$med,
+    ev.t.input$hi15,
+    ev.t.input$hi25, ev.t.input$hi35, 
+    ev.t.input$hi45, ev.t.input$hi55, 
     ev.t.input$hi65, ev.t.input$hi75,
-    ev.t.input$hi85, ev.t.input$hi95)
+    ev.t.input$hi85, ev.t.input$hi95,
+    ev.t.input$hi99)
 
-# Smooth spline fit
-fit <- smooth.spline(x = quantile, y = predicted.value, 
-                     spar = 0.25, all.knots = TRUE)
-
-pred <- 
-  predict(fit,
-          x = seq(0.01, 
-                  0.99, 
-                  by = .01)) %>% 
-  as.data.frame()
-
-deriv_fit <- 
-  predict(fit,
-          x = seq(0.01, 
-                  0.99, 
-                  by = .01),
-          deriv = 1) %>% 
-  as.data.frame()
-
-density <- 1 / deriv_fit$y
-
-density_df <- data.frame(
-  predicted_value = pred$y,
-  density = density
-)
-
-ggplot(density_df, aes(x = predicted_value, y = density)) +
-  geom_smooth(se = F) +
-  xlab('predicted price') +
-  ylab('density (larger == more probable)')
-
-# new stuff
-
-purchase_price <- 32
-payoff <- function(actual) actual - purchase_price # gain/loss
-
-# Compute payoff at each quantile
-g <- payoff(predicted.value)
+ggplot(data = cbind(p = predicted.value,
+                    q = quantile),
+       aes(x = quantile, y = predicted.value)) +
+  geom_point() +
+  geom_line() +
+  geom_smooth(se = F)
 
 # Trapezoidal integration over p
-expected_value <- 
-  sum((head(g, -1) + tail(g, -1)) / 2 * diff(quantile))
-
-expected_value.anal <-
+expected_value.buy <-
   lapply(X = seq(20, 60, by = .05),
          function(bid){
            g <-
@@ -882,15 +1183,172 @@ expected_value.anal <-
 
 note <- 
   paste0('max acceptable buy: $',
-    expected_value.anal[expected_value.anal$rational == 'yes', ]$bid %>%
+    expected_value.buy[expected_value.buy$rational == 'yes', ]$bid %>%
       max())
 
-ggplot(data = expected_value.anal,
+evb <-
+  ggplot(data = expected_value.buy,
        aes(x = bid, y = expected_value,
            colour = rational)) +
   geom_point() +
   labs(title = note,
        x = 'buy price',
        y = 'expected value')
+
+###########
+expected_value.sell <-
+  lapply(X = seq(20, 60, by = .05),
+         function(bid){
+           g <-
+              bid - predicted.value
+           
+           expected_value <-
+             sum((head(g, -1) + tail(g, -1)) / 2 * diff(quantile))
+           
+           list(bid = bid,
+                expected_value = expected_value) %>% 
+             return()
+         }) %>% 
+  bind_rows() %>% 
+  mutate(rational = 
+           if_else(expected_value > 0,
+                   'yes',
+                   'no'))
+
+note <- 
+  paste0('min acceptable sell: $',
+    expected_value.sell[expected_value.sell$rational == 'yes', ]$bid %>%
+      min())
+
+evs <- 
+  ggplot(data = expected_value.sell,
+       aes(x = bid, y = expected_value,
+           colour = rational)) +
+  geom_point() +
+  labs(title = note,
+       x = 'buy price',
+       y = 'expected value')
+
+plot_grid(evb, evs,
+          ncol = 2)
 ```
 
+Experiment?
+```{r}
+# for debugging
+# d <- as.character(results[!is.na(results$western_hub_dalmp_average), ]$date_time)
+
+ev.res <- 
+  lapply(
+  as.character(results[!is.na(results$western_hub_dalmp_average), ]$date_time),
+               function(d){
+                 
+                 # filter and extract information
+                  ev.t.input <<- results %>% 
+                    filter(date_time == d)
+                  
+                  quantile <- 
+                    c(0.005,
+                      0.025, 0.075, 
+                      0.125, 0.175, 
+                      0.225, 0.275, 
+                      0.325, 0.375,
+                      0.425,
+                      0.50,
+                      0.575,
+                      0.625, 0.675,
+                      0.725, 0.775, 
+                      0.825, 0.875, 
+                      0.925, 0.975,
+                      0.995)
+                  
+                  predicted.value <- 
+                    c(ev.t.input$lo99,
+                      ev.t.input$lo95, ev.t.input$lo85,
+                      ev.t.input$lo75, ev.t.input$lo65, 
+                      ev.t.input$lo55, ev.t.input$lo45,
+                      ev.t.input$lo35, ev.t.input$lo25,
+                      ev.t.input$lo15,
+                      ev.t.input$med,
+                      ev.t.input$hi15,
+                      ev.t.input$hi25, ev.t.input$hi35, 
+                      ev.t.input$hi45, ev.t.input$hi55, 
+                      ev.t.input$hi65, ev.t.input$hi75,
+                      ev.t.input$hi85, ev.t.input$hi95,
+                      ev.t.input$hi99)
+                  
+                  # expected value sell
+                  expected_value.sell <-
+                    lapply(X = seq(20, 60, by = .05),
+                           function(bid){
+                             g <-
+                                bid - predicted.value
+                             
+                             expected_value <-
+                               sum((head(g, -1) + tail(g, -1)) / 2 * diff(quantile))
+                             
+                             list(bid = bid,
+                                  #predicted.value = predicted.value,
+                                  expected_value = expected_value) %>% 
+                               return()
+                           }) %>% 
+                  bind_rows()
+                  
+                  # actual value sell
+                  actual.value.sell <-
+                    lapply(X = seq(20, 60, by = .05),
+                           function(bid){
+                             actual.val <-
+                               bid - ev.t.input$western_hub_dalmp_average
+                             
+                             list(western_hub_dalmp_average = ev.t.input$western_hub_dalmp_average,
+                                  eai.pred = ev.t.input$yhat,
+                                  actual.val = actual.val)
+                             }
+                           ) %>% 
+                    bind_rows()
+                  
+                  cbind(expected_value.sell, 
+                        actual.value.sell,
+                        d) %>% 
+                    return()
+               }
+  )
+
+ev.res.full <- 
+  ev.res %>% 
+  bind_rows()
+
+# the typical expected value estimate were inflated by $2.58
+err <- ev.res.full$expected_value - ev.res.full$actual.val
+per <- median(err) %>% round(2)
+
+ggplot(ev.res.full,
+       aes(x = expected_value,
+           y = actual.val)) +
+  geom_point() +
+  labs(title = 
+         paste0(
+           ev.res.full$d %>% head(1),
+           " to ",
+           ev.res.full$d %>% tail(1),
+           "; median error = ",
+           per
+           )
+       )
+
+# when limiting to a more plausible scenario: still 15 cents off
+ev.res.full %>%
+  filter(abs(eai.pred - bid) < 1) %>%
+  mutate(err = expected_value - actual.val) %>% 
+#  filter(rational == 'yes') %>% 
+  summarise(med.err = median(err),
+            
+            med.ev = median(expected_value),
+            max.ev = max(expected_value),
+            min.ev = min(expected_value),
+            
+            med.av = median(actual.val),
+            max.av = max(actual.val),
+            min.av = min(actual.val))
+```
